@@ -15,49 +15,60 @@ from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
 from qlib.tests.data import GetData
 from qlib.tests.config import CSI300_BENCH, CSI300_GBDT_TASK
 
+def coverage_metric(y_pred, data):
+    
+    y_true = data.get_label()
+    coverage = (y_true <= y_pred).astype(float).mean()
+    return 'coverage', coverage, True
 
 if __name__ == "__main__":
     # use default data
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
-    GetData().qlib_data(target_dir=provider_uri, region=REG_CN, exists_skip=True)
     qlib.init(provider_uri=provider_uri, region=REG_CN)
 
+    data_config = {
+        
+    }
+    model_config = {
+        
+    }
+    
     model = init_instance_by_config(CSI300_GBDT_TASK["model"])
     dataset = init_instance_by_config(CSI300_GBDT_TASK["dataset"])
 
-    port_analysis_config = {
-        "executor": {
-            "class": "SimulatorExecutor",
-            "module_path": "qlib.backtest.executor",
-            "kwargs": {
-                "time_per_step": "day",
-                "generate_portfolio_metrics": True,
-            },
-        },
-        "strategy": {
-            "class": "TopkDropoutStrategy",
-            "module_path": "qlib.contrib.strategy.signal_strategy",
-            "kwargs": {
-                "signal": (model, dataset),
-                "topk": 50,
-                "n_drop": 5,
-            },
-        },
-        "backtest": {
-            "start_time": "2017-01-01",
-            "end_time": "2020-08-01",
-            "account": 100000000,
-            "benchmark": CSI300_BENCH,
-            "exchange_kwargs": {
-                "freq": "day",
-                "limit_threshold": 0.095,
-                "deal_price": "close",
-                "open_cost": 0.0005,
-                "close_cost": 0.0015,
-                "min_cost": 5,
-            },
-        },
-    }
+    # port_analysis_config = {
+    #     "executor": {
+    #         "class": "SimulatorExecutor",
+    #         "module_path": "qlib.backtest.executor",
+    #         "kwargs": {
+    #             "time_per_step": "day",
+    #             "generate_portfolio_metrics": True,
+    #         },
+    #     },
+    #     "strategy": {
+    #         "class": "TopkDropoutStrategy",
+    #         "module_path": "qlib.contrib.strategy.signal_strategy",
+    #         "kwargs": {
+    #             "signal": (model, dataset),
+    #             "topk": 50,
+    #             "n_drop": 5,
+    #         },
+    #     },
+    #     "backtest": {
+    #         "start_time": "2017-01-01",
+    #         "end_time": "2020-08-01",
+    #         "account": 100000000,
+    #         "benchmark": CSI300_BENCH,
+    #         "exchange_kwargs": {
+    #             "freq": "day",
+    #             "limit_threshold": 0.095,
+    #             "deal_price": "close",
+    #             "open_cost": 0.0005,
+    #             "close_cost": 0.0015,
+    #             "min_cost": 5,
+    #         },
+    #     },
+    # }
 
     # NOTE: This line is optional
     # It demonstrates that the dataset can be used standalone.
