@@ -22,11 +22,9 @@ from ...model.base import Model
 from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
-from ..loss.loss import ranking_loss
+from ..loss.ndcg import compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss
 
-
-
-class GRU(Model):
+class GRUNDCG(Model):
     """GRU Model
 
     Parameters
@@ -57,7 +55,8 @@ class GRU(Model):
         n_jobs=10,
         GPU=0,
         seed=None,
-        lambda_reg=0.1,
+        sigma=1.0,
+        n_layer=10,
         **kwargs,
     ):
         # Set logger.
@@ -76,13 +75,12 @@ class GRU(Model):
         self.early_stop = early_stop
         self.optimizer = optimizer.lower()
         self.loss = loss
+        assert self.loss == "cross_entropy", "loss must be cross_entropy"
         self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
         self.n_jobs = n_jobs
         self.seed = seed
-        if self.loss == "ranking":
-            assert lambda_reg is not None, "lambda must be provided for ranking loss"
-            self.lambda_reg = lambda_reg        
-
+        self.sigma = sigma
+        self.n_layer = n_layer  
         self.logger.info(
             "GRU parameters setting:"
             "\nd_feat : {}"
@@ -99,7 +97,9 @@ class GRU(Model):
             "\ndevice : {}"
             "\nn_jobs : {}"
             "\nuse_GPU : {}"
-            "\nseed : {}".format(
+            "\nseed : {}"
+            "\nsigma : {}"
+            "\nn_layer : {}".format(
                 d_feat,
                 hidden_size,
                 num_layers,
@@ -115,6 +115,8 @@ class GRU(Model):
                 n_jobs,
                 self.use_gpu,
                 seed,
+                sigma,
+                n_layer,
             )
         )
 
@@ -157,8 +159,6 @@ class GRU(Model):
 
         if self.loss == "mse":
             return self.mse(pred[mask], label[mask], weight[mask])
-        elif self.loss == "ranking":
-            return ranking_loss(pred[mask], label[mask], self.lambda_reg)
 
         raise ValueError("unknown loss `%s`" % self.loss)
 
@@ -178,11 +178,20 @@ class GRU(Model):
             label = data[:, -1, -1].to(self.device)
 
             pred = self.GRU_model(feature.float())
-            loss = self.loss_fn(pred, label, weight.to(self.device))
-
+            # 这里使用NDCG @k来计算损失
+            pred.requires_grad_(True)
+            # 清零梯度
             self.train_optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_value_(self.GRU_model.parameters(), 3.0)
+            with torch.no_grad():
+                # 计算NDCG
+                lambda_grads = compute_lambda_gradients(label, pred.detach(), self.n_layer, self.sigma)
+                # 检查梯度是否有效
+                check_grad = torch.sum(lambda_grads).item()
+                if check_grad == float('inf') or np.isnan(check_grad):
+                    print("Warning: Invalid lambda gradients detected")
+                    lambda_grads = torch.zeros_like(lambda_grads)
+            pred.backward(lambda_grads / len(pred))                
+            torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0)
             self.train_optimizer.step()
 
     def test_epoch(self, data_loader):
@@ -198,10 +207,11 @@ class GRU(Model):
 
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
-                loss = self.loss_fn(pred, label, weight.to(self.device))
+                # 计算RankNet交叉熵损失（仅用于观察）
+                loss = ranknet_cross_entropy_loss(pred, label, sigma=self.sigma)
+                # 计算NDCG
+                score = calculate_ndcg_optimized(label, pred, self.n_layer)
                 losses.append(loss.item())
-
-                score = self.metric_fn(pred, label)
                 scores.append(score.item())
 
         return np.mean(losses), np.mean(scores)

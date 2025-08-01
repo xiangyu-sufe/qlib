@@ -149,7 +149,7 @@ class Alpha158(DataHandlerLP):
         return Alpha158DL.get_feature_config(conf)
 
     def get_label_config(self):
-        return [("(Ref($close, -2)/Ref($close, -1) - 1)")], ["LABEL0"]
+        return [("(Ref($close, -11)/Ref($close, -1) - 1)")], ["LABEL0"]
 
     # def get_label_config(self):
     #     return ["Ref($close, -2)/Ref($close, -1) - 1"], ["LABEL0"]

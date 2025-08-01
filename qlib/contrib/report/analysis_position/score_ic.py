@@ -15,7 +15,9 @@ def _get_score_ic(pred_label: pd.DataFrame):
     """
     concat_data = pred_label.copy()
     concat_data.dropna(axis=0, how="any", inplace=True)
-    _ic = concat_data.groupby(level="datetime", group_keys=False).apply(lambda x: x["label"].corr(x["score"]))
+    _ic = concat_data.groupby(level="datetime", group_keys=False).apply(
+        lambda x: x["label"].corr(x["score"])
+    )
     _rank_ic = concat_data.groupby(level="datetime", group_keys=False).apply(
         lambda x: x["label"].corr(x["score"], method="spearman")
     )
@@ -33,9 +35,16 @@ def score_ic_graph(pred_label: pd.DataFrame, show_notebook: bool = True, **kwarg
                 from qlib.data import D
                 from qlib.contrib.report import analysis_position
                 pred_df_dates = pred_df.index.get_level_values(level='datetime')
-                features_df = D.features(D.instruments('csi500'), ['Ref($close, -2)/Ref($close, -1)-1'], pred_df_dates.min(), pred_df_dates.max())
+                features_df = D.features(
+                    D.instruments('csi500'), 
+                    ['Ref($close, -2)/Ref($close, -1)-1'], 
+                    pred_df_dates.min(), 
+                    pred_df_dates.max()
+                )
                 features_df.columns = ['label']
-                pred_label = pd.concat([features_df, pred], axis=1, sort=True).reindex(features_df.index)
+                pred_label = pd.concat(
+                    [features_df, pred], axis=1, sort=True
+                ).reindex(features_df.index)
                 analysis_position.score_ic_graph(pred_label)
 
 
@@ -57,11 +66,24 @@ def score_ic_graph(pred_label: pd.DataFrame, show_notebook: bool = True, **kwarg
     """
     _ic_df = _get_score_ic(pred_label)
 
+    # 计算 IC 和 RankIC 的均值
+    ic_mean = _ic_df["ic"].mean()
+    rank_ic_mean = _ic_df["rank_ic"].mean()
+    
+    # 格式化标题，包含均值信息
+    title = (
+        f"Score IC (IC Mean: {ic_mean:.4f}, "
+        f"RankIC Mean: {rank_ic_mean:.4f})"
+    )
+
     _figure = ScatterGraph(
         _ic_df,
         layout=dict(
-            title="Score IC",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(_ic_df.index))),
+            title=title,
+            xaxis=dict(
+                tickangle=45, 
+                rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(_ic_df.index))
+            ),
         ),
         graph_kwargs={"mode": "lines+markers"},
     ).figure

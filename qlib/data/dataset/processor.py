@@ -206,7 +206,7 @@ class MinMaxNorm(Processor):
         cols = get_group_columns(df, self.fields_group)
         self.min_val = np.nanmin(df[cols].values, axis=0)
         self.max_val = np.nanmax(df[cols].values, axis=0)
-        self.ignore = self.min_val == self.max_val
+        self.ignore = self.min_val == self.max_val 
         # To improve the speed, we set the value of `min_val` to `0` for the columns that do not need to be processed,
         # and the value of `max_val` to `1`, when using `(x - min_val) / (max_val - min_val)` for uniform calculation,
         # the columns that do not need to be processed will be calculated by `(x - 0) / (1 - 0)`,
