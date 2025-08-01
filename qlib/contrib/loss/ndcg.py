@@ -119,8 +119,10 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03):
     y_min, y_max = y_true.min(), y_true.max()
     if y_max > y_min:
         real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer - 1)
+        real_scores = real_scores.float()
     else:
-        real_scores = torch.zeros_like(y_true)
+        warning.warn("We get the same prediction for all stocks!!!")
+        real_scores = torch.zeros_like(y_true, dtype=torch.float32)
     
     # 获取预测排名
     _, pred_indices = torch.sort(y_pred, descending=True)
