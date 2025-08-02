@@ -6,6 +6,7 @@
 from __future__ import division
 from __future__ import print_function
 
+from collections import defaultdict
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
@@ -25,6 +26,7 @@ from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.ndcg import compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss
+from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss
 from qlib.utils.color import *
 from colorama import Fore, Style, init
 
@@ -193,11 +195,24 @@ class GRUNDCG(Model):
 
         raise ValueError("unknown loss `%s`" % self.loss)
 
-    def metric_fn(self, pred, label):
+    def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label)
 
-        if self.metric in ("", "loss"):
-            return -self.loss_fn(pred[mask], label[mask])
+        if self.metric in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
+            if self.metric == "ic":
+                return -ic_loss(pred[mask], label[mask])
+            elif self.metric == "rankic":
+                return -rankic_loss(pred[mask], label[mask])
+            elif self.metric == "topk_ic":
+                if topk is None:
+                    raise ValueError("topk must be specified for topk_ic metric")
+                return -topk_ic_loss(pred[mask], label[mask], k=topk)
+            elif self.metric == "topk_rankic":
+                if topk is None:
+                    raise ValueError("topk must be specified for topk_rankic metric")
+                return -topk_rankic_loss(pred[mask], label[mask], k=topk)
+            elif self.metric == "loss":
+                return -self.loss_fn(pred[mask], label[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)
 
@@ -208,7 +223,6 @@ class GRUNDCG(Model):
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
-
             pred = self.GRU_model(feature.float())
             # 这里使用NDCG @k来计算损失
             pred.requires_grad_(True)
@@ -226,12 +240,36 @@ class GRUNDCG(Model):
             pred.backward(lambda_grads / len(pred))                
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0)
             self.train_optimizer.step()
+            # 更新完后记录下梯度
+            if self.debug:
+                grad_norm = compute_grad_norm(self.model)
+                grad_norm_layer = compute_layerwise_grad_norm(self.model)
+
+                epoch_grad_norms.append(grad_norm)
+                epoch_grad_norms_layer.append(grad_norm_layer)
+
+                # 打印梯度信息
+                print(f"Batch Grad Norm: {grad_norm:.6f}")
+                # 处理每层梯度范数（compute_layerwise_grad_norm返回的是字典，每个键对应一个参数的梯度范数列表）
+                layer_info_parts = []
+                for name, norms in grad_norm_layer.items():
+                    if isinstance(norms, list) and len(norms) > 0:
+                        avg_norm = np.mean(norms)
+                        layer_info_parts.append(f"{name}: {avg_norm:.6f}")
+                    else:
+                        layer_info_parts.append(f"{name}: {norms:.6f}")
+                layer_info = ", ".join(layer_info_parts)
+                print(f"Layer Grad Norms: {layer_info}")
 
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
 
         scores = []
         losses = []
+        ic_scores = []
+        rankic_scores = []
+        topk_ic_scores = []
+        topk_rankic_scores = []
 
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
@@ -246,10 +284,28 @@ class GRUNDCG(Model):
                 # 计算NDCG
                 score = calculate_ndcg_optimized(label, pred, self.n_layer, self.linear_ndcg)
                 losses.append(loss.item())
+                # 计算 IC
+                ic_score = self.metric_fn(pred, label, "ic")
+                rankic_score = self.metric_fn(pred, label, "rankic")
+                topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
+                topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
+                # append scores
                 scores.append(score.item())
+                ic_scores.append(ic_score.item())
+                rankic_scores.append(rankic_score.item())
+                topk_ic_scores.append(topk_ic_score.item())
+                topk_rankic_scores.append(topk_rankic_score.item())
 
-        return np.mean(losses), np.mean(scores)
+        result = defaultdict(lambda : np.nan)
+        result["loss"] = np.mean(losses)
+        result["score"] = np.mean(scores)
+        result["ic"] = np.mean(ic_scores)
+        result["rankic"] = np.mean(rankic_scores)
+        result["topk_ic"] = np.mean(topk_ic_scores)
+        result["topk_rankic"] = np.mean(topk_rankic_scores)
 
+        return result
+    
     def fit(
         self,
         dataset,
@@ -308,9 +364,16 @@ class GRUNDCG(Model):
             self.logger.info("training...")
             self.train_epoch(train_loader)
             self.logger.info("evaluating...")
-            train_loss, train_score = self.test_epoch(train_loader)
-            val_loss, val_score = self.test_epoch(valid_loader)
+            # train_loss, train_score = self.test_epoch(train_loader)
+            result = self.test_epoch(valid_loader)
             self.logger.info("train %.6f, valid %.6f" % (train_score, val_score))
+            self.logger.info(
+                f"{Fore.GREEN}"
+                f"valid loss: {result['loss']:.6f}, valid score: {result['score']:.6f}\n"
+                f"ic: {result['ic']:.6f}, rankic: {result['rankic']:.6f}, "
+                f"topk_ic: {result['topk_ic']:.6f}, topk_rankic: {result['topk_rankic']:.6f}"
+                f"{Style.RESET_ALL}"
+            )
             evals_result["train"].append(train_score)
             evals_result["valid"].append(val_score)
 
