@@ -25,23 +25,8 @@ if [ ! -f "$command_file" ]; then
     exit 1
 fi
 
-# 读取 bsub 模板命令（多行支持，空行分隔）
-mapfile -t raw_lines < "$command_file"
-templates=()
-current_block=""
-for line in "${raw_lines[@]}"; do
-    if [[ -z "$line" ]]; then
-        if [[ -n "$current_block" ]]; then
-            templates+=("$current_block")
-            current_block=""
-        fi
-    else
-        current_block+="$line"$'\n'
-    fi
-done
-if [[ -n "$current_block" ]]; then
-    templates+=("$current_block")
-fi
+# 读取 bsub 模板命令
+template=$(cat "$command_file")
 
 declare -A lr_job_ids
 declare -A lr_status
@@ -63,36 +48,32 @@ for lr in "${lrs[@]}"; do
         running=$(bjobs -u "$USER" 2>/dev/null | grep RUN | wc -l)
 
         if [ "$running" -lt "$max_running_jobs" ]; then
-            for template in "${templates[@]}"; do
-                # 替换模板中占位符 __LR__ 和 __SIGMA__ 为当前值
-                cmd="${template//__LR__/$lr}"
-                cmd="${cmd//__SIGMA__/$sigma}"
-                echo "🚀 提交任务 lr=$lr, sigma=$sigma（当前运行 $running 个，已提交 $submitted/$total_combinations）"
-                echo "执行命令: $cmd"
-                
-                # 创建临时脚本文件
-                temp_script=$(mktemp)
-                echo "$cmd" > "$temp_script"
-                chmod +x "$temp_script"
-                
-                job_output=$(bsub < "$temp_script" 2>&1)
-                echo "$job_output"
+            # 替换模板中占位符 __LR__ 和 __SIGMA__ 为当前值
+            cmd="${template//__LR__/$lr}"
+            cmd="${cmd//__SIGMA__/$sigma}"
+            echo "🚀 提交任务 lr=$lr, sigma=$sigma（当前运行 $running 个，已提交 $submitted/$total_combinations）"
+            
+            # 创建临时脚本文件
+            temp_script=$(mktemp)
+            echo "$cmd" > "$temp_script"
+            chmod +x "$temp_script"
+            
+            job_output=$(bsub < "$temp_script" 2>&1)
+            echo "$job_output"
 
-                if [[ "$job_output" =~ \<([0-9]+)\> ]]; then
-                    job_id="${BASH_REMATCH[1]}"
-                    lr_job_ids["$lr-$sigma"]=$job_id
-                    lr_status["$lr-$sigma"]="RUNNING"
-                    echo "✅ 提交成功：lr=$lr, sigma=$sigma, job_id=$job_id"
-                    ((submitted++))
-                    break  # 成功提交后跳出内层循环
-                else
-                    echo "❌ 提交失败：lr=$lr, sigma=$sigma"
-                    lr_status["$lr-$sigma"]="FAILED"
-                fi
-                
-                # 清理临时文件
-                rm -f "$temp_script"
-            done
+            if [[ "$job_output" =~ \<([0-9]+)\> ]]; then
+                job_id="${BASH_REMATCH[1]}"
+                lr_job_ids["$lr-$sigma"]=$job_id
+                lr_status["$lr-$sigma"]="RUNNING"
+                echo "✅ 提交成功：lr=$lr, sigma=$sigma, job_id=$job_id"
+                ((submitted++))
+            else
+                echo "❌ 提交失败：lr=$lr, sigma=$sigma"
+                lr_status["$lr-$sigma"]="FAILED"
+            fi
+            
+            # 清理临时文件
+            rm -f "$temp_script"
         else
             echo "⏸️ 当前运行任务数已达上限（$running），等待空位中..."
             sleep $submit_interval
