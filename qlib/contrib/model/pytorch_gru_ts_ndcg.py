@@ -248,7 +248,7 @@ class GRUNDCG(Model):
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0)
             # 手动更新梯度
             with torch.no_grad():
-                lr = self.optimizer.param_groups[0]['lr']
+                lr = self.train_optimizer.param_groups[0]['lr']
                 for p in self.model.parameters():
                     if p.grad is not None:
                         p.data -= lr * p.grad
