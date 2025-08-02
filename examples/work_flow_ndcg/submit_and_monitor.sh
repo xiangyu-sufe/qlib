@@ -6,28 +6,19 @@ monitor_interval=30         # 监控状态间隔（秒）
 command_file="bsub_template.txt"
 
 if [ "$#" -lt 2 ]; then
-    echo "❌ 错误：请至少传入学习率和sigma参数，例如：0.001 3.03 0.0005 2.5"
-    echo "用法: $0 <lr1> <sigma1> [<lr2> <sigma2> ...]"
+    echo "❌ 错误：请至少传入学习率列表和sigma列表"
+    echo "用法: $0 <lr1,lr2,lr3...> <sigma1,sigma2,sigma3...>"
+    echo "示例: $0 0.001,0.0005,0.0001 3.03,2.5,4.0"
     exit 1
 fi
 
-# 检查参数个数是否为偶数
-if [ $(( $# % 2 )) -ne 0 ]; then
-    echo "❌ 错误：参数个数必须为偶数（学习率和sigma成对出现）"
-    echo "用法: $0 <lr1> <sigma1> [<lr2> <sigma2> ...]"
-    exit 1
-fi
+# 解析学习率列表
+IFS=',' read -ra lrs <<< "$1"
+# 解析sigma列表
+IFS=',' read -ra sigmas <<< "$2"
 
-# 将参数分为学习率和sigma数组
-lrs=()
-sigmas=()
-i=1
-while [ $i -le $# ]; do
-    lrs+=("${!i}")
-    ((i++))
-    sigmas+=("${!i}")
-    ((i++))
-done
+echo "📋 学习率列表: ${lrs[*]}"
+echo "📋 Sigma列表: ${sigmas[*]}"
 
 if [ ! -f "$command_file" ]; then
     echo "❌ 错误：找不到命令模板文件 $command_file"
@@ -55,39 +46,49 @@ fi
 declare -A lr_job_ids
 declare -A lr_status
 
-i=0
-total=${#lrs[@]}
+# 计算笛卡尔积
+total_combinations=0
+for lr in "${lrs[@]}"; do
+    for sigma in "${sigmas[@]}"; do
+        ((total_combinations++))
+    done
+done
 
-while [ $i -lt $total ]; do
-    running=$(bjobs -u "$USER" 2>/dev/null | grep RUN | wc -l)
+echo "🚀 总共需要提交 $total_combinations 个任务"
 
-    if [ "$running" -lt "$max_running_jobs" ]; then
-        lr=${lrs[$i]}
-        sigma=${sigmas[$i]}
-        for template in "${templates[@]}"; do
-            # 替换模板中占位符 __LR__ 和 __SIGMA__ 为当前值
-            cmd="${template//__LR__/$lr}"
-            cmd="${cmd//__SIGMA__/$sigma}"
-            echo "🚀 提交任务 lr=$lr, sigma=$sigma（当前运行 $running 个）"
-            job_output=$(eval "$cmd" 2>&1)
-            echo "$job_output"
+# 提交所有组合的任务
+submitted=0
+for lr in "${lrs[@]}"; do
+    for sigma in "${sigmas[@]}"; do
+        running=$(bjobs -u "$USER" 2>/dev/null | grep RUN | wc -l)
 
-            if [[ "$job_output" =~ \<([0-9]+)\> ]]; then
-                job_id="${BASH_REMATCH[1]}"
-                lr_job_ids["$lr-$sigma"]=$job_id
-                lr_status["$lr-$sigma"]="RUNNING"
-                echo "✅ 提交成功：lr=$lr, sigma=$sigma, job_id=$job_id"
-            else
-                echo "❌ 提交失败：lr=$lr, sigma=$sigma"
-                lr_status["$lr-$sigma"]="FAILED"
-            fi
-        done
-        ((i++))
-    else
-        echo "⏸️ 当前运行任务数已达上限（$running），等待空位中..."
-    fi
+        if [ "$running" -lt "$max_running_jobs" ]; then
+            for template in "${templates[@]}"; do
+                # 替换模板中占位符 __LR__ 和 __SIGMA__ 为当前值
+                cmd="${template//__LR__/$lr}"
+                cmd="${cmd//__SIGMA__/$sigma}"
+                echo "🚀 提交任务 lr=$lr, sigma=$sigma（当前运行 $running 个，已提交 $submitted/$total_combinations）"
+                job_output=$(eval "$cmd" 2>&1)
+                echo "$job_output"
 
-    sleep $submit_interval
+                if [[ "$job_output" =~ \<([0-9]+)\> ]]; then
+                    job_id="${BASH_REMATCH[1]}"
+                    lr_job_ids["$lr-$sigma"]=$job_id
+                    lr_status["$lr-$sigma"]="RUNNING"
+                    echo "✅ 提交成功：lr=$lr, sigma=$sigma, job_id=$job_id"
+                else
+                    echo "❌ 提交失败：lr=$lr, sigma=$sigma"
+                    lr_status["$lr-$sigma"]="FAILED"
+                fi
+            done
+            ((submitted++))
+        else
+            echo "⏸️ 当前运行任务数已达上限（$running），等待空位中..."
+            sleep $submit_interval
+            # 重新开始这个循环
+            continue 2
+        fi
+    done
 done
 
 echo "✅ 所有任务提交完毕，开始监控..."
