@@ -4,6 +4,8 @@
 
 from __future__ import division
 from __future__ import print_function
+from collections import defaultdict
+import warnings
 
 import numpy as np
 from tqdm import tqdm
@@ -16,13 +18,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data.sampler import Sampler
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
 from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
-from ..loss.loss import ranking_loss
+from ..loss.loss import (ic_loss, rankic_loss,
+                         topk_ic_loss, topk_rankic_loss,
+                           ranking_loss, pairwise_loss, mse)
+from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
+
 from colorama import Fore, Style, init
 
 class DailyBatchSampler(Sampler):
@@ -75,6 +82,7 @@ class GRU(Model):
         GPU=0,
         seed=None,
         lambda_reg=0.1,
+        debug=False,
         **kwargs,
     ):
         # Set logger.
@@ -96,6 +104,7 @@ class GRU(Model):
         self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
         self.n_jobs = n_jobs
         self.seed = seed
+        self.debug = debug
         if self.loss == "ranking":
             assert lambda_reg is not None, "lambda must be provided for ranking loss"
             self.lambda_reg = lambda_reg        
@@ -116,7 +125,8 @@ class GRU(Model):
             "\ndevice : {}"
             "\nn_jobs : {}"
             "\nuse_GPU : {}"
-            "\nseed : {}".format(
+            "\nseed : {}"
+            "\ndebug : {}".format(
                 d_feat,
                 hidden_size,
                 num_layers,
@@ -132,6 +142,7 @@ class GRU(Model):
                 n_jobs,
                 self.use_gpu,
                 seed,
+                debug,
             )
         )
 
@@ -179,18 +190,40 @@ class GRU(Model):
 
         raise ValueError("unknown loss `%s`" % self.loss)
 
-    def metric_fn(self, pred, label):
+    def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label)
 
-        if self.metric in ("", "loss"):
-            return -self.loss_fn(pred[mask], label[mask])
+        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
+            if name == "ic":
+                return -ic_loss(pred[mask], label[mask])
+            elif name == "rankic":
+                return -rankic_loss(pred[mask], label[mask])
+            elif name == "topk_ic":
+                if topk is None:
+                    warnings.warn("topk must be specified for topk_ic metric, return nan")
+                    return torch.nan
+                return -topk_ic_loss(pred[mask], label[mask], k=topk)
+            elif name == "topk_rankic":
+                if topk is None:
+                    warnings.warn("topk must be specified for topk_ic metric, return nan")
+                    return torch.nan
+                return -topk_rankic_loss(pred[mask], label[mask], k=topk)
+            elif name == "loss":
+                return -self.loss_fn(pred[mask], label[mask])
 
-        raise ValueError("unknown metric `%s`" % self.metric)
+        raise ValueError("unknown metric `%s`" % name)
 
     def train_epoch(self, data_loader):
         self.GRU_model.train()
+        # Debug模式下记录每个batch的梯度信息
+        if self.debug:
+            epoch_grad_norms = []
+            epoch_grad_norms_layer = []
+            mse_loss_list = []
+            pairwise_loss_list = []
 
         for data, weight in data_loader:
+            data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
 
@@ -202,27 +235,83 @@ class GRU(Model):
             torch.nn.utils.clip_grad_value_(self.GRU_model.parameters(), 3.0)
             self.train_optimizer.step()
 
+            if self.debug:
+                # 计算MSE 和 pairwise loss 相对大小
+                with torch.no_grad():
+                    mse_loss = mse(pred, label).item()
+                    pr_loss = pairwise_loss(pred, label).item()
+                    mse_loss_list.append(mse_loss)
+                    pairwise_loss_list.append(pr_loss)
+                # 计算梯度范数
+                grad_norm = compute_grad_norm(self.GRU_model)
+                grad_norm_layer = compute_layerwise_grad_norm(self.GRU_model)
+                epoch_grad_norms.append(grad_norm)
+                epoch_grad_norms_layer.append(grad_norm_layer)
+
+                # Debug模式下记录梯度信息
+        if self.debug:
+            # 打印epoch级别的梯度统计
+            print(f"MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}")
+            avg_grad_norm = np.mean(epoch_grad_norms)
+            print(f"Epoch Avg Grad Norm: {avg_grad_norm:.6f}")
+
+            # 计算每层的平均梯度范数
+            if epoch_grad_norms_layer:
+                layer_names = epoch_grad_norms_layer[0].keys()
+                for layer_name in layer_names:
+                    layer_norms = []
+                    for batch_layer in epoch_grad_norms_layer:
+                        if isinstance(batch_layer[layer_name], list):
+                            layer_norms.extend(batch_layer[layer_name])
+                        else:
+                            layer_norms.append(batch_layer[layer_name])
+                    avg_layer_norm = np.mean(layer_norms)
+                    print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
+
 
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
 
         scores = []
         losses = []
+        ic_scores = []
+        rankic_scores = []
+        topk_ic_scores = []
+        topk_rankic_scores = []
 
         for data, weight in data_loader:
+            data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, -1].to(self.device)
 
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
-                loss = self.loss_fn(pred, label, weight.to(self.device))
+                # 计算RankNet交叉熵损失（仅用于观察）
+                loss = self.loss_fn(pred, label, )
                 losses.append(loss.item())
-
-                score = self.metric_fn(pred, label)
+                score = self.metric_fn(pred, label, name = 'loss')
+                # 计算 IC
+                ic_score = self.metric_fn(pred, label, "ic")
+                rankic_score = self.metric_fn(pred, label, "rankic")
+                topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
+                topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
+                # append scores
                 scores.append(score.item())
+                ic_scores.append(ic_score.item())
+                rankic_scores.append(rankic_score.item())
+                topk_ic_scores.append(topk_ic_score.item())
+                topk_rankic_scores.append(topk_rankic_score.item())
 
-        return np.mean(losses), np.mean(scores)
+        result = defaultdict(lambda : np.nan)
+        result["loss"] = np.mean(losses)
+        result["score"] = np.mean(scores)
+        result["ic"] = np.mean(ic_scores)
+        result["rankic"] = np.mean(rankic_scores)
+        result["topk_ic"] = np.mean(topk_ic_scores)
+        result["topk_rankic"] = np.mean(topk_rankic_scores)
+
+        return result
 
     def fit(
         self,
@@ -239,6 +328,10 @@ class GRU(Model):
         dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
         dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
 
+        # daily batch sampler
+        sampler_train = DailyBatchSampler(dl_train)
+        sampler_valid = DailyBatchSampler(dl_valid)
+
         if reweighter is None:
             wl_train = np.ones(len(dl_train))
             wl_valid = np.ones(len(dl_valid))
@@ -250,15 +343,13 @@ class GRU(Model):
 
         train_loader = DataLoader(
             ConcatDataset(dl_train, wl_train),
-            batch_size=self.batch_size,
-            shuffle=True,
+            sampler=sampler_train,
             num_workers=self.n_jobs,
             drop_last=True,
         )
         valid_loader = DataLoader(
             ConcatDataset(dl_valid, wl_valid),
-            batch_size=self.batch_size,
-            shuffle=False,
+            sampler=sampler_valid,
             num_workers=self.n_jobs,
             drop_last=True,
         )

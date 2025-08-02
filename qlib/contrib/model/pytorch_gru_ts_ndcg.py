@@ -6,14 +6,14 @@
 from __future__ import division
 from __future__ import print_function
 
-from collections import defaultdict
+from collections import defaultdict 
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
 import copy
 from ...utils import get_or_create_path
 from ...log import get_module_logger
-
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -28,6 +28,7 @@ from ...data.dataset.weight import Reweighter
 from ..loss.ndcg import compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss
 from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss
 from qlib.utils.color import *
+from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
 from colorama import Fore, Style, init
 
 init(autoreset=True)
@@ -110,7 +111,7 @@ class GRUNDCG(Model):
         self.n_layer = n_layer  
         self.linear_ndcg = linear_ndcg
         self.debug = debug
-        self.logger.info(Fore.RED + "use GPU: %s" % str(self.use_gpu) + Style.RESET_ALL)
+        self.logger.info(Fore.RED + "use GPU: %s" % str(self.device) + Style.RESET_ALL)
         self.logger.info(Fore.RED + ("Debug Mode" if self.debug else "RUN Mode") + Style.RESET_ALL)
         self.logger.info(
             "GRU parameters setting:"
@@ -198,26 +199,32 @@ class GRUNDCG(Model):
     def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label)
 
-        if self.metric in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
-            if self.metric == "ic":
+        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
+            if name == "ic":
                 return -ic_loss(pred[mask], label[mask])
-            elif self.metric == "rankic":
+            elif name == "rankic":
                 return -rankic_loss(pred[mask], label[mask])
-            elif self.metric == "topk_ic":
+            elif name == "topk_ic":
                 if topk is None:
-                    raise ValueError("topk must be specified for topk_ic metric")
+                    warnings.warn("topk must be specified for topk_ic metric, return nan")
+                    return torch.nan
                 return -topk_ic_loss(pred[mask], label[mask], k=topk)
-            elif self.metric == "topk_rankic":
+            elif name == "topk_rankic":
                 if topk is None:
-                    raise ValueError("topk must be specified for topk_rankic metric")
+                    warnings.warn("topk must be specified for topk_ic metric, return nan")
+                    return torch.nan
                 return -topk_rankic_loss(pred[mask], label[mask], k=topk)
-            elif self.metric == "loss":
+            elif name == "loss":
                 return -self.loss_fn(pred[mask], label[mask])
 
-        raise ValueError("unknown metric `%s`" % self.metric)
+        raise ValueError("unknown metric `%s`" % name)
 
     def train_epoch(self, data_loader):
         self.GRU_model.train()
+        # Debug模式下记录每个batch的梯度信息
+        if self.debug:
+            epoch_grad_norms = []
+            epoch_grad_norms_layer = []
 
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
@@ -237,29 +244,46 @@ class GRUNDCG(Model):
                     print("Warning: Invalid lambda gradients detected")
                     print("lambda_grads_sum:", check_grad)
                     lambda_grads = torch.zeros_like(lambda_grads)
-            pred.backward(lambda_grads / len(pred))                
+            pred.backward(lambda_grads)                
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0)
             self.train_optimizer.step()
             # 更新完后记录下梯度
             if self.debug:
-                grad_norm = compute_grad_norm(self.model)
-                grad_norm_layer = compute_layerwise_grad_norm(self.model)
-
+                grad_norm = compute_grad_norm(self.GRU_model)
+                grad_norm_layer = compute_layerwise_grad_norm(self.GRU_model)
                 epoch_grad_norms.append(grad_norm)
                 epoch_grad_norms_layer.append(grad_norm_layer)
+                # # 打印梯度信息
+                # print(f"Batch Grad Norm: {grad_norm:.6f}")
+                # # 处理每层梯度范数（compute_layerwise_grad_norm返回的是字典，每个键对应一个参数的梯度范数列表）
+                # layer_info_parts = []
+                # for name, norms in grad_norm_layer.items():
+                #     if isinstance(norms, list) and len(norms) > 0:
+                #         avg_norm = np.mean(norms)
+                #         layer_info_parts.append(f"{name}: {avg_norm:.6f}")
+                #     else:
+                #         layer_info_parts.append(f"{name}: {norms:.6f}")
+                # layer_info = ", ".join(layer_info_parts)
+                # print(f"Layer Grad Norms: {layer_info}")
 
-                # 打印梯度信息
-                print(f"Batch Grad Norm: {grad_norm:.6f}")
-                # 处理每层梯度范数（compute_layerwise_grad_norm返回的是字典，每个键对应一个参数的梯度范数列表）
-                layer_info_parts = []
-                for name, norms in grad_norm_layer.items():
-                    if isinstance(norms, list) and len(norms) > 0:
-                        avg_norm = np.mean(norms)
-                        layer_info_parts.append(f"{name}: {avg_norm:.6f}")
-                    else:
-                        layer_info_parts.append(f"{name}: {norms:.6f}")
-                layer_info = ", ".join(layer_info_parts)
-                print(f"Layer Grad Norms: {layer_info}")
+                # Debug模式下记录梯度信息
+        if self.debug:
+            # 打印epoch级别的梯度统计
+            avg_grad_norm = np.mean(epoch_grad_norms)
+            print(f"Epoch Avg Grad Norm: {avg_grad_norm:.6f}")
+
+            # 计算每层的平均梯度范数
+            if epoch_grad_norms_layer:
+                layer_names = epoch_grad_norms_layer[0].keys()
+                for layer_name in layer_names:
+                    layer_norms = []
+                    for batch_layer in epoch_grad_norms_layer:
+                        if isinstance(batch_layer[layer_name], list):
+                            layer_norms.extend(batch_layer[layer_name])
+                        else:
+                            layer_norms.append(batch_layer[layer_name])
+                    avg_layer_norm = np.mean(layer_norms)
+                    print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
 
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
@@ -366,7 +390,6 @@ class GRUNDCG(Model):
             self.logger.info("evaluating...")
             # train_loss, train_score = self.test_epoch(train_loader)
             result = self.test_epoch(valid_loader)
-            self.logger.info("train %.6f, valid %.6f" % (train_score, val_score))
             self.logger.info(
                 f"{Fore.GREEN}"
                 f"valid loss: {result['loss']:.6f}, valid score: {result['score']:.6f}\n"
@@ -374,7 +397,8 @@ class GRUNDCG(Model):
                 f"topk_ic: {result['topk_ic']:.6f}, topk_rankic: {result['topk_rankic']:.6f}"
                 f"{Style.RESET_ALL}"
             )
-            evals_result["train"].append(train_score)
+            # evals_result["train"].append(train_score)
+            val_score = result["score"]
             evals_result["valid"].append(val_score)
 
             if val_score > best_score:

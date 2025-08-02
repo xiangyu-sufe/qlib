@@ -32,12 +32,13 @@ if __name__ == "__main__":
         {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
-    # 排序学习 label 不用处理
+    # MSE PR loss label 不用处理, 截面 zscore 处理
     learn_processors = [
         {"class": "DropnaLabel"},
+        {"class": "ZScoreNorm", "kwargs": {"fields_group": "label"}},
     ]
 
-    start_time = "2011-12-31"  # 整个开始日期
+    start_time = "2017-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2021-12-31" # 验证集结束
@@ -63,8 +64,8 @@ if __name__ == "__main__":
 
     task = {
         "model": {
-            "class": "GRUNDCG",
-            "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
+            "class": "GRU",
+            "module_path": "qlib.contrib.model.pytorch_gru_ts",
             "kwargs": {
                 "d_feat": 158,
                 "hidden_size": 64,
@@ -72,15 +73,14 @@ if __name__ == "__main__":
                 "dropout": 0.0,
                 "n_epochs": 20,
                 "batch_size": 1,
-                "lr": 1e-3,
+                "lr": 5e-4,
                 "early_stop": 10,
-                "metric": "ndcg",
-                "loss": "cross_entropy",
+                "metric": "loss",
+                "loss": "ranking",
+                "seed": 42,
                 "n_jobs": 50,
-                "GPU": 0,
-                "sigma": 1.0,
-                "n_layer": 5,
-                "linear_ndcg": True,
+                "GPU": 1,
+                "lambda_reg": 0.0,
                 "debug": True,  # Set to True for debugging mode
             },
         },
