@@ -104,6 +104,12 @@ done
 
 echo "✅ 所有任务提交完毕，开始监控..."
 
+# 检查是否有成功提交的任务
+if [ ${#lr_job_ids[@]} -eq 0 ]; then
+    echo "❌ 没有成功提交任何任务，退出监控"
+    exit 1
+fi
+
 while true; do
     echo "🔍 [$(date '+%Y-%m-%d %H:%M:%S')] 监控任务状态..."
 

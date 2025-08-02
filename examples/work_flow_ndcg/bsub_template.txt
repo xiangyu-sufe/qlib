@@ -20,6 +20,12 @@ echo "=================" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 echo "当前工作目录: $(pwd)" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 echo "Python路径: $(which python)" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 
+# 检查文件是否存在
+if [ ! -f "workflow_ndcg.py" ]; then
+    echo "❌ 错误: workflow_ndcg.py 文件不存在" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
+    exit 1
+fi
+
 # 运行Python脚本，同时输出到控制台和文件
 python workflow_ndcg.py --lr __LR__ --sigma __SIGMA__ --save_path __LR___sigma__SIGMA__ 2>&1 | tee -a logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 

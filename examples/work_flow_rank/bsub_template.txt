@@ -1,0 +1,24 @@
+#BSUB -J grurank_lr__LR___gpu__GPU__
+#BSUB -q gpu
+#BSUB -m "gpu01 gpu02 gpu03 gpu04 gpu05 gpu06"
+#BSUB -gpu "num=1"
+#BSUB -n 1
+#BSUB -o logs/grurank_lr__LR___gpu__GPU___%J.out
+#BSUB -e logs/grurank_lr__LR___gpu__GPU___%J.err
+
+mkdir -p logs
+
+# 记录开始时间和参数
+echo "=== 任务开始 ===" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+echo "时间: $(date '+%Y-%m-%d %H:%M:%S')" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+echo "学习率: __LR__" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+echo "GPU ID: __GPU__" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+echo "作业ID: %J" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+echo "=================" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+
+# 运行Python脚本，同时输出到控制台和文件
+python workflow_rank.py --lr __LR__ --gpu __GPU__ --save_path __LR__ 2>&1 | tee -a logs/grurank_lr__LR___gpu__GPU___%J.out
+
+# 记录结束时间
+echo "=== 任务结束 ===" >> logs/grurank_lr__LR___gpu__GPU___%J.out
+echo "时间: $(date '+%Y-%m-%d %H:%M:%S')" >> logs/grurank_lr__LR___gpu__GPU___%J.out 
