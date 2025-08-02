@@ -85,7 +85,7 @@ if __name__ == "__main__":
                 "loss": "ranking",
                 "seed": 42,
                 "n_jobs": 50,
-                "GPU": args.gpu,
+                "GPU": 0,  # 当使用CUDA_VISIBLE_DEVICES时，总是使用设备0
                 "lambda_reg": 1.0,
                 "debug": True,  # Set to True for debugging mode
                 "save_path": save_path

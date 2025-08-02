@@ -49,12 +49,37 @@ show_help() {
     echo "  监控状态间隔: ${monitor_interval}秒"
 }
 
+# 显示GPU信息的函数
+show_gpu_info() {
+    print_info "系统GPU信息:"
+    nvidia-smi --query-gpu=index,name,memory.total,memory.used,utilization.gpu --format=csv,noheader 2>/dev/null | while IFS=, read -r index name total used util; do
+        # 清理名称中的空格
+        name=$(echo "$name" | sed 's/^ *//;s/ *$//')
+        echo "  GPU $index: $name, 内存: ${used}MB/${total}MB, 利用率: $util%"
+    done
+    echo ""
+    
+    # 显示可用性检查结果
+    print_info "GPU可用性检查:"
+    for gpu in 0 1 2 3; do
+        if check_gpu_availability "$gpu"; then
+            print_success "GPU $gpu: 可用"
+        else
+            print_warning "GPU $gpu: 不可用"
+        fi
+    done
+    echo ""
+}
+
 # 检查参数
 if [ "$#" -lt 2 ]; then
     print_error "错误：参数不足"
     show_help
     exit 1
 fi
+
+# 显示GPU信息
+show_gpu_info
 
 param_type="$1"
 shift
@@ -120,11 +145,83 @@ pending_tasks=("${tasks[@]}")
 submitted_tasks=()
 completed_tasks=()
 
+# 检查GPU可用性的函数
+check_gpu_availability() {
+    local gpu_id="$1"
+    
+    # 检查GPU是否存在
+    if ! nvidia-smi -i "$gpu_id" >/dev/null 2>&1; then
+        return 1
+    fi
+    
+    # 检查GPU内存使用情况
+    local memory_info=$(nvidia-smi -i "$gpu_id" --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    local memory_used=$(echo "$memory_info" | cut -d',' -f1)
+    local memory_total=$(echo "$memory_info" | cut -d',' -f2)
+    
+    # 如果内存使用率超过80%，认为不可用
+    if [ "$memory_used" -gt $((memory_total * 8 / 10)) ]; then
+        return 1
+    fi
+    
+    # 检查GPU利用率
+    local gpu_util=$(nvidia-smi -i "$gpu_id" --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null)
+    if [ $? -eq 0 ] && [ "$gpu_util" -gt 90 ]; then
+        return 1
+    fi
+    
+    return 0
+}
+
+# 获取可用GPU的函数
+get_available_gpu() {
+    if [[ "$param_type" == "lr_gpu" ]]; then
+        for gpu in "${available_gpus[@]}"; do
+            if [[ "${gpu_usage[$gpu]}" == "FREE" ]] && check_gpu_availability "$gpu"; then
+                echo "$gpu"
+                return 0
+            fi
+        done
+        echo ""  # 没有可用GPU
+    else
+        # 对于lr_only模式，检查GPU 0是否可用，如果不可用则尝试其他GPU
+        if check_gpu_availability "0"; then
+            echo "0"
+        elif check_gpu_availability "1"; then
+            echo "1"
+        elif check_gpu_availability "2"; then
+            echo "2"
+        elif check_gpu_availability "3"; then
+            echo "3"
+        else
+            echo ""
+        fi
+    fi
+}
+
 # 初始化GPU使用情况
 if [[ "$param_type" == "lr_gpu" ]]; then
+    print_info "检查GPU可用性..."
+    available_gpus_checked=()
     for gpu in "${available_gpus[@]}"; do
-        gpu_usage["$gpu"]="FREE"
+        if check_gpu_availability "$gpu"; then
+            gpu_usage["$gpu"]="FREE"
+            available_gpus_checked+=("$gpu")
+            print_success "GPU $gpu 可用"
+        else
+            print_warning "GPU $gpu 不可用，跳过"
+        fi
     done
+    available_gpus=("${available_gpus_checked[@]}")
+    
+    if [ ${#available_gpus[@]} -eq 0 ]; then
+        print_error "没有可用的GPU！"
+        exit 1
+    fi
 fi
 
 print_info "📋 总任务数: ${#tasks[@]}"
@@ -132,22 +229,6 @@ print_info "📋 最大GPU任务数: $max_gpu_jobs"
 if [[ "$param_type" == "lr_gpu" ]]; then
     print_info "📋 可用GPU: ${available_gpus[*]}"
 fi
-
-# 获取可用GPU的函数
-get_available_gpu() {
-    if [[ "$param_type" == "lr_gpu" ]]; then
-        for gpu in "${available_gpus[@]}"; do
-            if [[ "${gpu_usage[$gpu]}" == "FREE" ]]; then
-                echo "$gpu"
-                return 0
-            fi
-        done
-        echo ""  # 没有可用GPU
-    else
-        # 对于lr_only模式，使用默认GPU 0
-        echo "0"
-    fi
-}
 
 # 提交任务的函数
 submit_task() {
@@ -176,11 +257,12 @@ submit_task() {
     # 根据学习率生成save_path，避免特殊字符
     local save_path="model_lr${lr//./_}"
     
-    # 构建命令
+    # 构建命令 - 修复CUDA_VISIBLE_DEVICES设置
     local cmd="CUDA_VISIBLE_DEVICES=$gpu python workflow_rank.py --lr $lr --gpu $gpu --save_path $save_path"
     
     print_info "🚀 提交任务: $task"
     print_info "分配GPU: $gpu"
+    print_info "CUDA_VISIBLE_DEVICES: $gpu"
     print_info "执行命令: $cmd"
     print_info "保存路径: $save_path"
     
