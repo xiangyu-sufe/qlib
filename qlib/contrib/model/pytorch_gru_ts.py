@@ -221,6 +221,7 @@ class GRU(Model):
             epoch_grad_norms_layer = []
             mse_loss_list = []
             pairwise_loss_list = []
+            tot_loss_list = []
 
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
@@ -242,6 +243,7 @@ class GRU(Model):
                     pr_loss = pairwise_loss(pred, label).item()
                     mse_loss_list.append(mse_loss)
                     pairwise_loss_list.append(pr_loss)
+                    tot_loss_list.append(loss.item())
                 # 计算梯度范数
                 grad_norm = compute_grad_norm(self.GRU_model)
                 grad_norm_layer = compute_layerwise_grad_norm(self.GRU_model)
@@ -253,6 +255,7 @@ class GRU(Model):
             # 打印epoch级别的梯度统计
             # f"{Fore.GREEN}"
             print(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
+            print(f"{Fore.RED} Total loss: {np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
             avg_grad_norm = np.mean(epoch_grad_norms)
             print(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
 
