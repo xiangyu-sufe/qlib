@@ -1,0 +1,14 @@
+#BSUB -J grundcg_lr__LR__
+#BSUB -q gpu
+#BSUB -m "gpu01|gpu02|gpu03|gpu04|gpu05|gpu06"
+#BSUB -gpu "num=1"
+#BSUB -n 1
+#BSUB -o logs/grundcg_lr__LR___%J.out
+#BSUB -e logs/grundcg_lr__LR___%J.err
+
+mkdir -p logs
+
+source ~/.bashrc
+conda activate qlib-env
+
+python workflow_ndcg.py --lr __LR__

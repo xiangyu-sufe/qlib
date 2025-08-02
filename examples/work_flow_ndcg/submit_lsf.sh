@@ -21,4 +21,4 @@ TIME_TAG=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="logs/grundcg_run_lr${LR}_${TIME_TAG}.log"
 
 # 运行 Python 脚本，替换其中的学习率参数
-python run_grundcg.py --lr "$LR" > "$LOG_FILE" 2>&1
+python workflow_ndcg.py --lr "$LR" > "$LOG_FILE" 2>&1
