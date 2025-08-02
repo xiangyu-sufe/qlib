@@ -26,6 +26,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--gpu", type=int, default=0)
     args = parser.parse_args()
     save_path = args.save_path
 
@@ -84,7 +85,7 @@ if __name__ == "__main__":
                 "loss": "ranking",
                 "seed": 42,
                 "n_jobs": 50,
-                "GPU": 1,
+                "GPU": args.gpu,
                 "lambda_reg": 1.0,
                 "debug": True,  # Set to True for debugging mode
                 "save_path": save_path
