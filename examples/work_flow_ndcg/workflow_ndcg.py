@@ -26,20 +26,18 @@ if __name__ == "__main__":
     qlib.init(provider_uri=provider_uri, region=REG_CN)
     market = "csiall"
     benchmark = "SH000905"
-    # 学习的参数
-    learn_processors = [
-        {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        {"class": "DropnaLabel"},
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 32}},
-        {"class": "Fillna", "kwargs": {}},
-    ]
-    # 测试集
+    # 
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", }},
-        {"class": "Fillna", "kwargs": {}},
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+        {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
-    start_time = "2011-12-31"  # 整个开始日期
+    # 排序学习 label 不用处理
+    learn_processors = [
+        {"class": "DropnaLabel"},
+    ]
+
+    start_time = "2017-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2021-12-31" # 验证集结束
@@ -78,7 +76,7 @@ if __name__ == "__main__":
                 "early_stop": 10,
                 "metric": "ndcg",
                 "loss": "cross_entropy",
-                "n_jobs": 30,
+                "n_jobs": 50,
                 "GPU": 0,
                 "sigma": 1.0,
                 "n_layer": 5,
@@ -100,6 +98,7 @@ if __name__ == "__main__":
                     "valid": (val_start_time, val_end_time),
                     "test": (test_start_time, end_time),
                 },
+                "enable_cache": True ,
                 
             },
         },
