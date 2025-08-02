@@ -29,7 +29,7 @@ if __name__ == "__main__":
     # 
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+        {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
         {"class": "ZScoreNorm", "kwargs": {"fields_group": "label"}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
