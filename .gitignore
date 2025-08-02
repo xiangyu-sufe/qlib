@@ -15,7 +15,6 @@ dist/
 *.hd5
 *.csv
 *.log
-*.txt
 
 .env
 .vim
