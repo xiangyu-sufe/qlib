@@ -25,6 +25,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", type=str, default=".")
+    parser.add_argument("--lr", type=float, default=1e-4)
     args = parser.parse_args()
     save_path = args.save_path
 
@@ -77,7 +78,7 @@ if __name__ == "__main__":
                 "dropout": 0.0,
                 "n_epochs": 1,
                 "batch_size": 1,
-                "lr": 1e-4,
+                "lr": args.lr,
                 "early_stop": 1,
                 "metric": "loss",
                 "loss": "ranking",
