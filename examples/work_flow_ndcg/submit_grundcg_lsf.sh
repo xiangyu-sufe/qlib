@@ -3,8 +3,8 @@
 #BSUB -q gpu                 # 队列名，可根据系统调整为gpu、short等
 #BSUB -n 1                      # 使用 CPU 核心数
 #BSUB -gpu "num=1"              # 请求 GPU 数量（如不需要可删除此行）
-#BSUB -o logs/grundcg_%J.out    # 标准输出文件（%J为Job ID）
-#BSUB -e logs/grundcg_%J.err    # 错误输出文件
+#BSUB -o grundcg_%J.out    # 标准输出文件（%J为Job ID）
+#BSUB -e grundcg_%J.err    # 错误输出文件
 #BSUB -m "gpu01|gpu02|gpu03|gpu04|gpu05|gpu06" # 指定 gpu
 
 # 设置默认学习率，如果没传参就用 0.001
