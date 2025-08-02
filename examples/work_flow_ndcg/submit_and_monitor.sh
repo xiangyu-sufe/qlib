@@ -68,6 +68,7 @@ for lr in "${lrs[@]}"; do
                 cmd="${template//__LR__/$lr}"
                 cmd="${cmd//__SIGMA__/$sigma}"
                 echo "🚀 提交任务 lr=$lr, sigma=$sigma（当前运行 $running 个，已提交 $submitted/$total_combinations）"
+                echo "执行命令: $cmd"
                 job_output=$(eval "$cmd" 2>&1)
                 echo "$job_output"
 
@@ -76,12 +77,13 @@ for lr in "${lrs[@]}"; do
                     lr_job_ids["$lr-$sigma"]=$job_id
                     lr_status["$lr-$sigma"]="RUNNING"
                     echo "✅ 提交成功：lr=$lr, sigma=$sigma, job_id=$job_id"
+                    ((submitted++))
+                    break  # 成功提交后跳出内层循环
                 else
                     echo "❌ 提交失败：lr=$lr, sigma=$sigma"
                     lr_status["$lr-$sigma"]="FAILED"
                 fi
             done
-            ((submitted++))
         else
             echo "⏸️ 当前运行任务数已达上限（$running），等待空位中..."
             sleep $submit_interval

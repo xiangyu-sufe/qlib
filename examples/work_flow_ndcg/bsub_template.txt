@@ -17,7 +17,7 @@ echo "作业ID: %J" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 echo "=================" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 
 # 运行Python脚本，同时输出到控制台和文件
-python workflow_ndcg.py --lr __LR__ --sigma __SIGMA__ --save_path __LR__-__SIGMA__ 2>&1 | tee -a logs/grundcg_lr__LR___sigma__SIGMA___%J.out
+python workflow_ndcg.py --lr __LR__ --sigma __SIGMA__ --save_path __LR___sigma__SIGMA__ 2>&1 | tee -a logs/grundcg_lr__LR___sigma__SIGMA___%J.out
 
 # 记录结束时间
 echo "=== 任务结束 ===" >> logs/grundcg_lr__LR___sigma__SIGMA___%J.out
