@@ -30,12 +30,12 @@ if __name__ == "__main__":
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
         {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+        {"class": "ZScoreNorm", "kwargs": {"fields_group": "label"}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
     # MSE PR loss label 不用处理, 截面 zscore 处理
     learn_processors = [
         {"class": "DropnaLabel"},
-        {"class": "ZScoreNorm", "kwargs": {"fields_group": "label"}},
     ]
 
     start_time = "2017-12-31"  # 整个开始日期
@@ -73,7 +73,7 @@ if __name__ == "__main__":
                 "dropout": 0.0,
                 "n_epochs": 20,
                 "batch_size": 1,
-                "lr": 5e-4,
+                "lr": 1e-5,
                 "early_stop": 10,
                 "metric": "loss",
                 "loss": "ranking",

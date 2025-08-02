@@ -29,7 +29,8 @@ if __name__ == "__main__":
     # 
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+        # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+        {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
     # 排序学习 label 不用处理
@@ -37,7 +38,7 @@ if __name__ == "__main__":
         {"class": "DropnaLabel"},
     ]
 
-    start_time = "2011-12-31"  # 整个开始日期
+    start_time = "2018-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2021-12-31" # 验证集结束

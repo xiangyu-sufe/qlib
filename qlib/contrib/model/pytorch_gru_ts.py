@@ -225,7 +225,7 @@ class GRU(Model):
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
-            label = data[:, -1, -1].to(self.device)
+            label = data[:, -1, -1].to(self.device).float()
 
             pred = self.GRU_model(feature.float())
             loss = self.loss_fn(pred, label, weight.to(self.device))
@@ -251,9 +251,10 @@ class GRU(Model):
                 # Debug模式下记录梯度信息
         if self.debug:
             # 打印epoch级别的梯度统计
-            print(f"MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}")
+            # f"{Fore.GREEN}"
+            print(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
             avg_grad_norm = np.mean(epoch_grad_norms)
-            print(f"Epoch Avg Grad Norm: {avg_grad_norm:.6f}")
+            print(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
 
             # 计算每层的平均梯度范数
             if epoch_grad_norms_layer:
@@ -283,7 +284,7 @@ class GRU(Model):
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
-            label = data[:, -1, -1].to(self.device)
+            label = data[:, -1, -1].to(self.device).float()
 
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
@@ -372,10 +373,15 @@ class GRU(Model):
             self.logger.info("training...")
             self.train_epoch(train_loader)
             self.logger.info("evaluating...")
-            train_loss, train_score = self.test_epoch(train_loader)
-            val_loss, val_score = self.test_epoch(valid_loader)
-            self.logger.info("train %.6f, valid %.6f" % (train_score, val_score))
-            evals_result["train"].append(train_score)
+            result = self.test_epoch(valid_loader)
+            self.logger.info(
+                f"{Fore.GREEN}"
+                f"valid loss: {result['loss']:.6f}, valid score: {result['score']:.6f}\n"
+                f"ic: {result['ic']:.6f}, rankic: {result['rankic']:.6f}, "
+                f"topk_ic: {result['topk_ic']:.6f}, topk_rankic: {result['topk_rankic']:.6f}"
+                f"{Style.RESET_ALL}"
+            )
+            val_score = result["score"]
             evals_result["valid"].append(val_score)
 
             if val_score > best_score:
