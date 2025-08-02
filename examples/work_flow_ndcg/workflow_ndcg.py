@@ -35,8 +35,8 @@ if __name__ == "__main__":
     # 
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
-        {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+        # {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
     # 排序学习 label 不用处理
@@ -79,7 +79,7 @@ if __name__ == "__main__":
                 "dropout": 0.0,
                 "n_epochs": 20,
                 "batch_size": 1,
-                "lr": 1e-3,
+                "lr": 1e-2,
                 "early_stop": 10,
                 "metric": "ndcg",
                 "loss": "cross_entropy",
