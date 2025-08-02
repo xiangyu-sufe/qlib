@@ -25,7 +25,10 @@ from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.ndcg import compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss
+from qlib.utils.color import *
+from colorama import Fore, Style, init
 
+init(autoreset=True)
 class DailyBatchSampler(Sampler):
     def __init__(self, data_source):
         self.data_source = data_source
@@ -105,8 +108,8 @@ class GRUNDCG(Model):
         self.n_layer = n_layer  
         self.linear_ndcg = linear_ndcg
         self.debug = debug
-        self.logger.info("use GPU: %s" % str(self.use_gpu))
-        self.logger.info("Debug Mode" if self.debug else "RUN Mode")
+        self.logger.info(Fore.RED + "use GPU: %s" % str(self.use_gpu))
+        self.logger.info(Fore.RED + "Debug Mode" if self.debug else "RUN Mode")
         self.logger.info(
             "GRU parameters setting:"
             "\nd_feat : {}"
@@ -202,6 +205,7 @@ class GRUNDCG(Model):
         self.GRU_model.train()
 
         for data, weight in data_loader:
+            data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
 
@@ -365,5 +369,6 @@ class GRUModel(nn.Module):
         self.d_feat = d_feat
 
     def forward(self, x):
+        x = x.squeeze()  # remove the time dimension
         out, _ = self.rnn(x)
         return self.fc_out(out[:, -1, :]).squeeze()

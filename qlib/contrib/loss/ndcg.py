@@ -126,6 +126,7 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03, linear=False):
     
     # 标准化真实分数
     y_min, y_max = y_true.min(), y_true.max()
+    
     if y_max > y_min:
         real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer - 1)
         real_scores = real_scores.float()
