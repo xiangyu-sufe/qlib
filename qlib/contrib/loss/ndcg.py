@@ -36,7 +36,7 @@ def get_pairs_parallel(real_scores):
     
     return torch.stack([i_final, j_final], dim=1)
 
-def single_dcg_vectorized(real_scores, positions, k):
+def single_dcg_vectorized(real_scores, positions, k, linear=False):
     """
     向量化计算DCG贡献
     """
@@ -47,11 +47,14 @@ def single_dcg_vectorized(real_scores, positions, k):
     if valid_mask.any():
         valid_positions = positions[valid_mask]
         valid_scores = real_scores[valid_mask]
-        dcg_values[valid_mask] = (2 ** valid_scores - 1) / torch.log2(valid_positions.float() + 2)
+        if linear:
+            dcg_values[valid_mask] = valid_scores / torch.log2(valid_positions.float() + 2)
+        else:
+            dcg_values[valid_mask] = (2 ** valid_scores - 1) / torch.log2(valid_positions.float() + 2)
     
     return dcg_values
 
-def calculate_idcg_optimized(real_scores, k):
+def calculate_idcg_optimized(real_scores, k, linear=False):
     """
     优化的IDCG计算
     """
@@ -63,11 +66,14 @@ def calculate_idcg_optimized(real_scores, k):
     positions = torch.arange(k, device=real_scores.device, dtype=torch.float32)
     
     # 计算IDCG
-    idcg = torch.sum((2 ** top_k_scores - 1) / torch.log2(positions + 2))
+    if linear:
+        idcg = torch.sum(top_k_scores / torch.log2(positions + 2))
+    else:
+        idcg = torch.sum((2 ** top_k_scores - 1) / torch.log2(positions + 2))
     
     return idcg
 
-def calculate_ndcg_optimized(y_true, y_pred, n_layer):
+def calculate_ndcg_optimized(y_true, y_pred, n_layer, linear=False):
     """
     优化的NDCG计算
     """
@@ -91,12 +97,15 @@ def calculate_ndcg_optimized(y_true, y_pred, n_layer):
     if top_k_mask.any():
         top_k_scores = real_scores[top_k_mask]
         top_k_ranks = i_rank[top_k_mask]
-        dcg = torch.sum((2 ** top_k_scores - 1) / torch.log2(top_k_ranks.float() + 2))
+        if linear:
+            dcg = torch.sum(top_k_scores / torch.log2(top_k_ranks.float() + 2))
+        else:
+            dcg = torch.sum((2 ** top_k_scores - 1) / torch.log2(top_k_ranks.float() + 2))
     else:
         dcg = torch.tensor(0.0, device=y_pred.device)
     
     # 计算IDCG
-    idcg = calculate_idcg_optimized(real_scores, k)
+    idcg = calculate_idcg_optimized(real_scores, k, linear)
     
     # 避免除零
     if idcg > 0:
@@ -104,7 +113,7 @@ def calculate_ndcg_optimized(y_true, y_pred, n_layer):
     else:
         return torch.tensor(0.0, device=y_pred.device)
 
-def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03):
+def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03, linear=False):
     """
     Lambda Net: 直接计算并返回用于梯度调节的lambda值
     """
@@ -130,7 +139,7 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03):
     i_rank[pred_indices] = torch.arange(n, device=device)
     
     # 计算IDCG用于归一化
-    idcg = calculate_idcg_optimized(real_scores, k)
+    idcg = calculate_idcg_optimized(real_scores, k, linear)
     
     if idcg <= 0:
         warnings.warn('idcg <= 0, check your data')
@@ -166,10 +175,10 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03):
     
     # 计算NDCG增益差异
     # (2 ** valid_scores - 1) / torch.log2(valid_positions.float() + 2)
-    dcg_i_at_i = single_dcg_vectorized(real_i, rank_i, k)
-    dcg_i_at_j = single_dcg_vectorized(real_i, rank_j, k)
-    dcg_j_at_i = single_dcg_vectorized(real_j, rank_i, k)
-    dcg_j_at_j = single_dcg_vectorized(real_j, rank_j, k)
+    dcg_i_at_i = single_dcg_vectorized(real_i, rank_i, k, linear)
+    dcg_i_at_j = single_dcg_vectorized(real_i, rank_j, k, linear)
+    dcg_j_at_i = single_dcg_vectorized(real_j, rank_i, k, linear)
+    dcg_j_at_j = single_dcg_vectorized(real_j, rank_j, k, linear)
     
     # Delta NDCG = |交换位置后的NDCG变化|
     delta_ndcg = torch.abs((dcg_i_at_j + dcg_j_at_i) - (dcg_i_at_i + dcg_j_at_j)) / idcg
