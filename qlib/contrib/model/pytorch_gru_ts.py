@@ -23,7 +23,24 @@ from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.loss import ranking_loss
+from colorama import Fore, Style, init
 
+class DailyBatchSampler(Sampler):
+    def __init__(self, data_source):
+        self.data_source = data_source
+        # calculate number of samples in each batch
+        self.daily_count = (
+            pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
+        )
+        self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # calculate begin index of each batch
+        self.daily_index[0] = 0
+
+    def __iter__(self):
+        for idx, count in zip(self.daily_index, self.daily_count):
+            yield np.arange(idx, idx + count)
+
+    def __len__(self):
+        return len(self.data_source)
 
 
 class GRU(Model):
@@ -184,6 +201,7 @@ class GRU(Model):
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.GRU_model.parameters(), 3.0)
             self.train_optimizer.step()
+
 
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
