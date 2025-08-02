@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-
+# add daily batch sampler
+# add NDCG loss function
 
 from __future__ import division
 from __future__ import print_function
@@ -16,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data import Sampler
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
@@ -23,6 +25,24 @@ from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.ndcg import compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss
+
+class DailyBatchSampler(Sampler):
+    def __init__(self, data_source):
+        self.data_source = data_source
+        # calculate number of samples in each batch
+        self.daily_count = (
+            pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
+        )
+        self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # calculate begin index of each batch
+        self.daily_index[0] = 0
+
+    def __iter__(self):
+        for idx, count in zip(self.daily_index, self.daily_count):
+            yield np.arange(idx, idx + count)
+
+    def __len__(self):
+        return len(self.data_source)
+
 
 class GRUNDCG(Model):
     """GRU Model
@@ -57,6 +77,8 @@ class GRUNDCG(Model):
         seed=None,
         sigma=1.0,
         n_layer=10,
+        linear_ndcg=False,
+        debug=False,
         **kwargs,
     ):
         # Set logger.
@@ -81,6 +103,10 @@ class GRUNDCG(Model):
         self.seed = seed
         self.sigma = sigma
         self.n_layer = n_layer  
+        self.linear_ndcg = linear_ndcg
+        self.debug = debug
+        self.logger.info("use GPU: %s" % str(self.use_gpu))
+        self.logger.info("Debug Mode" if self.debug else "RUN Mode")
         self.logger.info(
             "GRU parameters setting:"
             "\nd_feat : {}"
@@ -99,7 +125,8 @@ class GRUNDCG(Model):
             "\nuse_GPU : {}"
             "\nseed : {}"
             "\nsigma : {}"
-            "\nn_layer : {}".format(
+            "\nn_layer : {}"
+            "\nlinear_ndcg : {}".format(
                 d_feat,
                 hidden_size,
                 num_layers,
@@ -117,6 +144,7 @@ class GRUNDCG(Model):
                 seed,
                 sigma,
                 n_layer,
+                linear_ndcg,
             )
         )
 
@@ -184,11 +212,12 @@ class GRUNDCG(Model):
             self.train_optimizer.zero_grad()
             with torch.no_grad():
                 # 计算NDCG
-                lambda_grads = compute_lambda_gradients(label, pred.detach(), self.n_layer, self.sigma)
+                lambda_grads = compute_lambda_gradients(label, pred.detach(), self.n_layer, self.sigma, self.linear_ndcg)
                 # 检查梯度是否有效
                 check_grad = torch.sum(lambda_grads).item()
                 if check_grad == float('inf') or np.isnan(check_grad):
                     print("Warning: Invalid lambda gradients detected")
+                    print("lambda_grads_sum:", check_grad)
                     lambda_grads = torch.zeros_like(lambda_grads)
             pred.backward(lambda_grads / len(pred))                
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0)
@@ -210,7 +239,7 @@ class GRUNDCG(Model):
                 # 计算RankNet交叉熵损失（仅用于观察）
                 loss = ranknet_cross_entropy_loss(pred, label, sigma=self.sigma)
                 # 计算NDCG
-                score = calculate_ndcg_optimized(label, pred, self.n_layer)
+                score = calculate_ndcg_optimized(label, pred, self.n_layer, self.linear_ndcg)
                 losses.append(loss.item())
                 scores.append(score.item())
 
@@ -230,6 +259,9 @@ class GRUNDCG(Model):
 
         dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
         dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
+        # daily batch sampler
+        sampler_train = DailyBatchSampler(dl_train)
+        sampler_valid = DailyBatchSampler(dl_valid)
 
         if reweighter is None:
             wl_train = np.ones(len(dl_train))
@@ -242,15 +274,13 @@ class GRUNDCG(Model):
 
         train_loader = DataLoader(
             ConcatDataset(dl_train, wl_train),
-            batch_size=self.batch_size,
-            shuffle=True,
+            sampler=sampler_train,
             num_workers=self.n_jobs,
             drop_last=True,
         )
         valid_loader = DataLoader(
             ConcatDataset(dl_valid, wl_valid),
-            batch_size=self.batch_size,
-            shuffle=False,
+            sampler=sampler_valid,
             num_workers=self.n_jobs,
             drop_last=True,
         )
@@ -303,7 +333,8 @@ class GRUNDCG(Model):
 
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
-        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
+        sampler_test = DailyBatchSampler(dl_test)
+        test_loader = DataLoader(dl_test, sampler=sampler_test, num_workers=self.n_jobs)
         self.GRU_model.eval()
         preds = []
 
