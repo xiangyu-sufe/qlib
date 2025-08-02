@@ -14,6 +14,20 @@ from ...utils.paral import datetime_groupby_apply
 from qlib.data.inst_processor import InstProcessor
 from qlib.data import D
 
+from pandarallel import pandarallel
+
+_initialized = False  # 模块级全局变量，控制是否初始化过
+
+def init_pandarallel(n_jobs=4, progress_bar=False, verbose=0):
+    global _initialized
+    if not _initialized:
+        pandarallel.initialize(
+            nb_workers=n_jobs,
+            progress_bar=progress_bar,
+            verbose=verbose
+        )
+        _initialized = True
+
 
 def get_group_columns(df: pd.DataFrame, group: Union[Text, None]):
     """
@@ -175,6 +189,15 @@ class ProcessInf(Processor):
 
         return replace_inf(df)
 
+class ProcessInfHXY(Processor):
+    """Replace inf/-inf with NaN"""
+
+    def __call__(self, df):
+        data = df.replace([np.inf, -np.inf], np.nan)
+        
+        return data
+
+                    
 
 class Fillna(Processor):
     """Process NaN"""
@@ -346,13 +369,22 @@ class CSRankNorm(Processor):
 
     """
 
-    def __init__(self, fields_group=None):
+    def __init__(self, fields_group=None, parallel=False, n_jobs=1):
         self.fields_group = fields_group
-
+        self.parallel = parallel
+        self.n_jobs = n_jobs
+        
     def __call__(self, df):
         # try not modify original dataframe
         cols = get_group_columns(df, self.fields_group)
-        t = df[cols].groupby("datetime", group_keys=False).rank(pct=True)
+        if isinstance(cols, str):
+            cols = [cols]  # 强制转为 list
+            
+        if self.parallel:
+            init_pandarallel(n_jobs=self.n_jobs)
+            t = df[cols].groupby("datetime", group_keys=False).parallel_apply(lambda x: x.rank(pct=True))
+        else:
+            t = df[cols].groupby("datetime", group_keys=False).rank(pct=True)
         t -= 0.5
         t *= 3.46  # NOTE: towards unit std
         df[cols] = t
@@ -362,12 +394,20 @@ class CSRankNorm(Processor):
 class CSZFillna(Processor):
     """Cross Sectional Fill Nan"""
 
-    def __init__(self, fields_group=None):
+    def __init__(self, fields_group=None, parallel=False, n_jobs=1):
         self.fields_group = fields_group
+        self.parallel = parallel
+        self.n_jobs = n_jobs
 
     def __call__(self, df):
         cols = get_group_columns(df, self.fields_group)
-        df[cols] = df[cols].groupby("datetime", group_keys=False).apply(lambda x: x.fillna(x.mean()))
+        if self.parallel:
+            print("并行填充")
+            init_pandarallel(n_jobs=self.n_jobs)
+            df[cols] = df[cols].groupby("datetime", group_keys=False).parallel_apply(lambda x: x.fillna(x.mean()))
+        else:
+            df[cols] = df[cols].groupby("datetime", group_keys=False).apply(lambda x: x.fillna(x.mean()))
+            
         return df
 
 

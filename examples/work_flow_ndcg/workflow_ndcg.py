@@ -28,16 +28,16 @@ if __name__ == "__main__":
     benchmark = "SH000905"
     # 学习的参数
     learn_processors = [
-        {"class": "ProcessInf", "kwargs": {}},
+        {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
         {"class": "DropnaLabel"},
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature"}},
-        {"class": "CSZFillna", "kwargs": {"fields_group":"feature"}},
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 16}},
+        {"class": "CSZFillna", "kwargs": {"fields_group":"feature", "parallel": True, "n_jobs": 16}},
     ]
     # 测试集
     infer_processors = [
-        {"class": "ProcessInf", "kwargs": {}},
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature"}},
-        {"class": "CSZFillna", "kwargs": {"fields_group": "feature"}},
+        {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 16}},
+        {"class": "CSZFillna", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 16}},
     ]
     start_time = "2011-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
@@ -58,6 +58,8 @@ if __name__ == "__main__":
         "instruments": market,
         "infer_processors":infer_processors,
         "learn_processors":learn_processors,
+        # "infer_processors":[],
+        # "learn_processors":[],
         "drop_raw": True,
     }   
 
