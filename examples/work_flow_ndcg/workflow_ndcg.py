@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
+    parser.add_argument("--sigma", type=float, default=1.0)
     args = parser.parse_args()
     save_path = args.save_path
 
@@ -79,7 +80,7 @@ if __name__ == "__main__":
                 "hidden_size": 64,
                 "num_layers": 2,
                 "dropout": 0.0,
-                "n_epochs": 1,
+                "n_epochs": 40,
                 "batch_size": 1,
                 "lr": args.lr,
                 "early_stop": 10,
@@ -87,7 +88,7 @@ if __name__ == "__main__":
                 "loss": "cross_entropy",
                 "n_jobs": 50,
                 "GPU": 0,
-                "sigma": 1.0,
+                "sigma": args.sigma,
                 "n_layer": 5,
                 "linear_ndcg": True,
                 "debug": True,  # Set to True for debugging mode
