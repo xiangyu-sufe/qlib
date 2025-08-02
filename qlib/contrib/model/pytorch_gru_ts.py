@@ -31,6 +31,8 @@ from ..loss.loss import (ic_loss, rankic_loss,
 from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
 
 from colorama import Fore, Style, init
+import matplotlib.pyplot as plt
+import os
 
 class DailyBatchSampler(Sampler):
     def __init__(self, data_source):
@@ -83,6 +85,7 @@ class GRU(Model):
         seed=None,
         lambda_reg=0.1,
         debug=False,
+        save_path=None,
         **kwargs,
     ):
         # Set logger.
@@ -105,6 +108,7 @@ class GRU(Model):
         self.n_jobs = n_jobs
         self.seed = seed
         self.debug = debug
+        self.save_path = save_path
         if self.loss == "ranking":
             assert lambda_reg is not None, "lambda must be provided for ranking loss"
             self.lambda_reg = lambda_reg        
@@ -126,7 +130,8 @@ class GRU(Model):
             "\nn_jobs : {}"
             "\nuse_GPU : {}"
             "\nseed : {}"
-            "\ndebug : {}".format(
+            "\ndebug : {}"
+            "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
                 num_layers,
@@ -143,6 +148,7 @@ class GRU(Model):
                 self.use_gpu,
                 seed,
                 debug,
+                save_path,
             )
         )
 
@@ -216,12 +222,15 @@ class GRU(Model):
     def train_epoch(self, data_loader):
         self.GRU_model.train()
         # Debug模式下记录每个batch的梯度信息
+        tot_loss_list = []
+        result = defaultdict(lambda : np.nan)
+
         if self.debug:
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
             mse_loss_list = []
             pairwise_loss_list = []
-            tot_loss_list = []
+            
 
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
@@ -235,6 +244,8 @@ class GRU(Model):
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.GRU_model.parameters(), 3.0)
             self.train_optimizer.step()
+            # 计算损失
+            tot_loss_list.append(loss.item())
 
             if self.debug:
                 # 计算MSE 和 pairwise loss 相对大小
@@ -243,14 +254,15 @@ class GRU(Model):
                     pr_loss = pairwise_loss(pred, label).item()
                     mse_loss_list.append(mse_loss)
                     pairwise_loss_list.append(pr_loss)
-                    tot_loss_list.append(loss.item())
                 # 计算梯度范数
                 grad_norm = compute_grad_norm(self.GRU_model)
                 grad_norm_layer = compute_layerwise_grad_norm(self.GRU_model)
                 epoch_grad_norms.append(grad_norm)
                 epoch_grad_norms_layer.append(grad_norm_layer)
 
-                # Debug模式下记录梯度信息
+
+        result["train"] = np.mean(tot_loss_list)
+        # Debug模式下记录梯度信息
         if self.debug:
             # 打印epoch级别的梯度统计
             # f"{Fore.GREEN}"
@@ -272,7 +284,8 @@ class GRU(Model):
                     avg_layer_norm = np.mean(layer_norms)
                     print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
 
-
+        return result
+    
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
 
@@ -326,6 +339,8 @@ class GRU(Model):
     ):
         dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
         dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        self.train_index = dl_train.get_index()
+        self.val_index = dl_valid.get_index()
         if dl_train.empty or dl_valid.empty:
             raise ValueError("Empty data from dataset, please check your dataset config.")
 
@@ -366,7 +381,8 @@ class GRU(Model):
         best_epoch = 0
         evals_result["train"] = []
         evals_result["valid"] = []
-
+        evals_result["train_score"] = []
+        evals_result["valid_score"] = []
         # train
         self.logger.info("training...")
         self.fitted = True
@@ -374,9 +390,12 @@ class GRU(Model):
         for step in tqdm(range(self.n_epochs)):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
-            self.train_epoch(train_loader)
+            result = self.train_epoch(train_loader)
+            evals_result["train"].append(result["train"])
+            evals_result["train_score"].append(result["score"])
             self.logger.info("evaluating...")
             result = self.test_epoch(valid_loader)
+            
             self.logger.info(
                 f"{Fore.GREEN}"
                 f"valid loss: {result['loss']:.6f}, valid score: {result['score']:.6f}\n"
@@ -385,7 +404,8 @@ class GRU(Model):
                 f"{Style.RESET_ALL}"
             )
             val_score = result["score"]
-            evals_result["valid"].append(val_score)
+            evals_result["valid"].append(result["loss"])
+            evals_result["valid_score"].append(val_score)
 
             if val_score > best_score:
                 best_score = val_score
@@ -404,6 +424,8 @@ class GRU(Model):
 
         if self.use_gpu:
             torch.cuda.empty_cache()
+        # 可视化损失
+        self.visualize_evals_result(evals_result)
 
     def predict(self, dataset):
         if not self.fitted:
@@ -411,11 +433,14 @@ class GRU(Model):
 
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
-        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
+        self.test_index = dl_test.get_index()
+        sampler_test = DailyBatchSampler(dl_test)
+        test_loader = DataLoader(dl_test, sampler=sampler_test, num_workers=self.n_jobs)
         self.GRU_model.eval()
         preds = []
 
         for data in test_loader:
+            data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
 
             with torch.no_grad():
@@ -423,8 +448,118 @@ class GRU(Model):
 
             preds.append(pred)
 
-        return pd.Series(np.concatenate(preds), index=dl_test.get_index())
+        return pd.Series(np.concatenate(preds), index=self.test_index)
 
+
+    def visualize_evals_result(self, evals_result,):
+        """
+        可视化训练和验证损失曲线。
+        分别绘制loss和score的图表，分别监测训练和验证指标。
+        新增：在图下方显示训练集、验证集、测试集的时间区间。
+        """
+        self.logger.info("visualizing evals result...")
+        self.logger.info(f"save_path: {self.save_path}")
+        def _get_time_range(index):
+            """提取时间区间"""
+            if index is None:
+                return "N/A"
+            if hasattr(index, "get_level_values"):
+                try:
+                    dates = index.get_level_values("datetime")
+                except Exception:
+                    dates = index
+            else:
+                dates = index
+            if len(dates) == 0:
+                return "N/A"
+            return f"{str(min(dates))[:10]} ~ {str(max(dates))[:10]}"
+
+        best_epoch = evals_result.get("best_epoch", None)
+        has_train = "train" in evals_result.keys() and len(evals_result["train"]) > 0
+        has_valid = "valid" in evals_result.keys() and len(evals_result["valid"]) > 0
+        has_train_score = "train_score" in evals_result.keys() and len(evals_result["train_score"]) > 0
+        has_valid_score = "valid_score" in evals_result.keys() and len(evals_result["valid_score"]) > 0
+        
+        if has_train or has_valid or has_train_score or has_valid_score or best_epoch is not None:
+            # 创建子图
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 14))
+
+            # 第一个子图：Loss曲线
+            if has_train:
+                ax1.plot(evals_result["train"], label="Train Loss", color='blue', linewidth=2)
+            if has_valid:
+                ax1.plot(evals_result["valid"], label="Valid Loss", color='red', linewidth=2)
+
+            # 标记最佳epoch（基于验证损失）
+            if best_epoch is not None and has_valid:
+                ax1.scatter(
+                    best_epoch,
+                    evals_result["valid"][best_epoch],
+                    label="Best Epoch",
+                    color='green',
+                    s=100,
+                    zorder=10
+                )
+
+            ax1.set_xlabel("Epoch")
+            ax1.set_ylabel("Loss")
+            ax1.set_title(f"{self.metric} Loss - Training vs Validation")
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+
+            # 第二个子图：Score曲线
+            if has_train_score:
+                ax2.plot(evals_result["train_score"], label="Train Score", color='blue', linewidth=2)
+            if has_valid_score:
+                ax2.plot(evals_result["valid_score"], label="Valid Score", color='red', linewidth=2)
+
+            # 标记最佳epoch（基于验证分数）
+            if best_epoch is not None and has_valid_score:
+                ax2.scatter(
+                    best_epoch,
+                    evals_result["valid_score"][best_epoch],
+                    label="Best Epoch",
+                    color='green',
+                    s=100,
+                    zorder=10
+                )
+
+            ax2.set_xlabel("Epoch")
+            ax2.set_ylabel("Score")
+            ax2.set_title(f"{self.metric} Score - Training vs Validation")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+
+            # 调整子图间距，为时间区间信息留出空间
+            plt.tight_layout()
+            plt.subplots_adjust(bottom=0.15)
+
+            # 添加时间区间信息
+            train_range = _get_time_range(self.train_index)
+            val_range = _get_time_range(self.val_index)
+
+            time_info = f"Train: {train_range}  |  Valid: {val_range}"
+            fig.text(0.5, 0.02, time_info, ha='center', va='bottom', fontsize=10,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
+
+            # 添加总标题
+            if best_epoch is not None:
+                title_info = f"Best Epoch: {best_epoch}"
+                if has_valid:
+                    title_info += f" (Loss: {evals_result['valid'][best_epoch]:.4f})"
+                if has_valid_score:
+                    title_info += f" (Score: {evals_result['valid_score'][best_epoch]:.4f})"
+                fig.suptitle(title_info, fontsize=14, y=0.95)
+            
+            if self.save_path is not None:
+                if not os.path.exists(self.save_path):
+                    os.makedirs(self.save_path)
+                plt.savefig(
+                    os.path.join(self.save_path, "evals_result.png"),
+                    dpi=300,
+                    bbox_inches='tight'
+                )
+            plt.close()
 
 class GRUModel(nn.Module):
     def __init__(self, d_feat=6, hidden_size=64, num_layers=2, dropout=0.0):

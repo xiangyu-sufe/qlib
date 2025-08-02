@@ -26,7 +26,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--save_path", type=str, default=".")
     args = parser.parse_args()
+    save_path = args.save_path
 
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
     qlib.init(provider_uri=provider_uri, region=REG_CN)
@@ -77,9 +79,9 @@ if __name__ == "__main__":
                 "hidden_size": 64,
                 "num_layers": 2,
                 "dropout": 0.0,
-                "n_epochs": 20,
+                "n_epochs": 1,
                 "batch_size": 1,
-                "lr": 1e-1,
+                "lr": args.lr,
                 "early_stop": 10,
                 "metric": "ndcg",
                 "loss": "cross_entropy",
@@ -89,6 +91,7 @@ if __name__ == "__main__":
                 "n_layer": 5,
                 "linear_ndcg": True,
                 "debug": True,  # Set to True for debugging mode
+                "save_path": save_path
             },
         },
         "dataset": {
@@ -110,10 +113,11 @@ if __name__ == "__main__":
             },
         },
     }
-    task["model"]["kwargs"]["lr"] = args.lr
-
+    
 
     # model initialization
     model = init_instance_by_config(task["model"])
     dataset = init_instance_by_config(task["dataset"])
     model.fit(dataset)
+    pred = model.predict(dataset)
+    print(pred.head())

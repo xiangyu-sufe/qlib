@@ -22,6 +22,12 @@ import numpy as np
 
 if __name__ == "__main__":
     # 数据参数
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--save_path", type=str, default=".")
+    args = parser.parse_args()
+    save_path = args.save_path
+
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
     qlib.init(provider_uri=provider_uri, region=REG_CN)
     market = "csiall"
@@ -30,20 +36,20 @@ if __name__ == "__main__":
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
         {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
-        {"class": "ZScoreNorm", "kwargs": {"fields_group": "label"}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
     # MSE PR loss label 不用处理, 截面 zscore 处理
     learn_processors = [
         {"class": "DropnaLabel"},
+        {"class": "CSZScoreNorm", "kwargs": {"fields_group": "label"}},
     ]
 
-    start_time = "2017-12-31"  # 整个开始日期
+    start_time = "2009-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
-    val_end_time = "2021-12-31" # 验证集结束
-    test_start_time = "2022-01-01" # 测试集开始
-    end_time = "2022-12-31" # 整个结束日期
+    val_end_time = "2020-12-31" # 验证集结束
+    test_start_time = "2021-01-01" # 测试集开始
+    end_time = "2021-12-31" # 整个结束日期
     ###################################
     # train model
     ###################################
@@ -57,8 +63,6 @@ if __name__ == "__main__":
         "instruments": market,
         "infer_processors":infer_processors,
         "learn_processors":learn_processors,
-        # "infer_processors":[],
-        # "learn_processors":[],
         "drop_raw": True,
     }   
 
@@ -71,17 +75,18 @@ if __name__ == "__main__":
                 "hidden_size": 64,
                 "num_layers": 2,
                 "dropout": 0.0,
-                "n_epochs": 20,
+                "n_epochs": 1,
                 "batch_size": 1,
-                "lr": 1e-5,
-                "early_stop": 10,
+                "lr": 1e-4,
+                "early_stop": 1,
                 "metric": "loss",
                 "loss": "ranking",
                 "seed": 42,
                 "n_jobs": 50,
                 "GPU": 1,
-                "lambda_reg": 0.0,
+                "lambda_reg": 1.0,
                 "debug": True,  # Set to True for debugging mode
+                "save_path": save_path
             },
         },
         "dataset": {
@@ -109,3 +114,5 @@ if __name__ == "__main__":
     model = init_instance_by_config(task["model"])
     dataset = init_instance_by_config(task["dataset"])
     model.fit(dataset)
+    pred = model.predict(dataset)
+    print(pred.head())

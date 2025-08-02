@@ -228,6 +228,7 @@ class GRUNDCG(Model):
     def train_epoch(self, data_loader):
         self.GRU_model.train()
         # Debug模式下记录每个batch的梯度信息
+        result = defaultdict(lambda : np.nan)
         if self.debug:
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
@@ -298,6 +299,8 @@ class GRUNDCG(Model):
                     avg_layer_norm = np.mean(layer_norms)
                     print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
 
+        return result
+    
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
 
@@ -403,7 +406,9 @@ class GRUNDCG(Model):
         for step in tqdm(range(self.n_epochs)):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
-            self.train_epoch(train_loader)
+            result = self.train_epoch(train_loader) 
+            evals_result["train"].append(result["train"]) 
+            evals_result["train_score"].append(result["score"]) 
             self.logger.info("evaluating...")
             result = self.test_epoch(valid_loader)
             self.logger.info(
@@ -435,6 +440,8 @@ class GRUNDCG(Model):
 
         if self.use_gpu:
             torch.cuda.empty_cache()
+        # 可视化损失
+        self.visualize_evals_result(evals_result)
 
     def predict(self, dataset):
         if not self.fitted:
@@ -465,6 +472,8 @@ class GRUNDCG(Model):
         分别绘制loss和score的图表，分别监测训练和验证指标。
         新增：在图下方显示训练集、验证集、测试集的时间区间。
         """
+        self.logger.info("visualizing evals result...")
+        self.logger.info(f"save_path: {self.save_path}")
         def _get_time_range(index):
             """提取时间区间"""
             if index is None:
@@ -509,7 +518,7 @@ class GRUNDCG(Model):
 
             ax1.set_xlabel("Epoch")
             ax1.set_ylabel("Loss")
-            ax1.set_title(f"{self.metric_name} Loss - Training vs Validation")
+            ax1.set_title(f"{self.metric} Loss - Training vs Validation")
             ax1.legend()
             ax1.grid(True, alpha=0.3)
 
@@ -532,7 +541,7 @@ class GRUNDCG(Model):
 
             ax2.set_xlabel("Epoch")
             ax2.set_ylabel("Score")
-            ax2.set_title(f"{self.metric_name} Score - Training vs Validation")
+            ax2.set_title(f"{self.metric} Score - Training vs Validation")
             ax2.legend()
             ax2.grid(True, alpha=0.3)
 
@@ -543,9 +552,8 @@ class GRUNDCG(Model):
             # 添加时间区间信息
             train_range = _get_time_range(self.train_index)
             val_range = _get_time_range(self.val_index)
-            test_range = _get_time_range(self.test_index)
 
-            time_info = f"Train: {train_range}  |  Valid: {val_range}  |  Test: {test_range}"
+            time_info = f"Train: {train_range}  |  Valid: {val_range}"
             fig.text(0.5, 0.02, time_info, ha='center', va='bottom', fontsize=10,
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
 
@@ -558,7 +566,7 @@ class GRUNDCG(Model):
                     title_info += f" (Score: {evals_result['valid_score'][best_epoch]:.4f})"
                 fig.suptitle(title_info, fontsize=14, y=0.95)
             
-            if self.save_path is not None:
+            if self.save_path is not None and self.save_path != "":
                 if not os.path.exists(self.save_path):
                     os.makedirs(self.save_path)
                 plt.savefig(
