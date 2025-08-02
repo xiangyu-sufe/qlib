@@ -8,7 +8,5 @@
 
 mkdir -p logs
 
-source ~/.bashrc
-conda activate qlib-env
 
 python workflow_ndcg.py --lr __LR__
