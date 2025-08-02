@@ -22,6 +22,12 @@ import numpy as np
 
 if __name__ == "__main__":
     # 数据参数
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    args = parser.parse_args()
+
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
     qlib.init(provider_uri=provider_uri, region=REG_CN)
     market = "csiall"
@@ -104,6 +110,7 @@ if __name__ == "__main__":
             },
         },
     }
+    task["model"]["kwargs"]["lr"] = args.lr
 
 
     # model initialization
