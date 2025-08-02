@@ -52,6 +52,44 @@ def rankic_loss(pred, label):
     label_rank = rank_data(label)
     return -torch.corrcoef(torch.stack((pred_rank, label_rank), dim=0))[0, 1]
 
+def topk_ic_loss(pred, label, k=10):
+    """
+    计算预测值和真实标签在预测前 1/k 比例内的 rank IC（Spearman相关）。
+
+    参数:
+        pred: (N,) 预测收益率张量
+        label: (N,) 实际收益率张量
+        k: 整数，例如 k=5 表示取 top 20%
+    """
+    N = pred.shape[0]
+    topk_num = max(1, int(N / k))  # 至少选一个
+
+    # 取预测值中 topk_num 最大的样本的索引
+    _, topk_idx = torch.topk(pred, topk_num)
+
+    # 获取对应的预测值和标签
+    pred_topk = pred[topk_idx]
+    label_topk = label[topk_idx]
+
+    # 计算  IC
+    return -torch.corrcoef(torch.stack((pred_topk, label_topk), dim=0))[0, 1]
+
+def topk_rankic_loss(pred, label, k=10):
+    # rank 处理
+
+    N = pred.shape[0]
+    topk_num = max(1, int(N / k))  # 至少选一个
+
+    # 取预测值中 topk_num 最大的样本的索引
+    _, topk_idx = torch.topk(pred, topk_num)
+
+    # 获取对应的预测值和标签
+    pred_topk = rank_data(pred[topk_idx])
+    label_topk = rank_data(label[topk_idx])
+    
+    # 计算  IC
+    return -torch.corrcoef(torch.stack((pred_topk, label_topk), dim=0))[0, 1]
+
 
 def ndcg_loss(pred, label):
     ...

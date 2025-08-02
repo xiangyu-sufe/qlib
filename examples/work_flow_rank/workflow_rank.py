@@ -23,11 +23,9 @@ import numpy as np
 if __name__ == "__main__":
     # 数据参数
     import argparse
-
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
-    parser.add_argument("--sigma", type=float, default=1.0)
+    parser.add_argument("--lr", type=float, default=1e-4)
     args = parser.parse_args()
     save_path = args.save_path
 
@@ -38,16 +36,16 @@ if __name__ == "__main__":
     # 
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
         {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
-    # 排序学习 label 不用处理
+    # MSE PR loss label 不用处理, 截面 zscore 处理
     learn_processors = [
         {"class": "DropnaLabel"},
+        {"class": "CSZScoreNorm", "kwargs": {"fields_group": "label"}},
     ]
 
-    start_time = "2014-12-31"  # 整个开始日期
+    start_time = "2009-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2020-12-31" # 验证集结束
@@ -66,31 +64,28 @@ if __name__ == "__main__":
         "instruments": market,
         "infer_processors":infer_processors,
         "learn_processors":learn_processors,
-        # "infer_processors":[],
-        # "learn_processors":[],
         "drop_raw": True,
     }   
 
     task = {
         "model": {
-            "class": "GRUNDCG",
-            "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
+            "class": "GRU",
+            "module_path": "qlib.contrib.model.pytorch_gru_ts",
             "kwargs": {
                 "d_feat": 158,
                 "hidden_size": 64,
                 "num_layers": 2,
                 "dropout": 0.0,
-                "n_epochs": 40,
+                "n_epochs": 1,
                 "batch_size": 1,
                 "lr": args.lr,
-                "early_stop": 10,
-                "metric": "ndcg",
-                "loss": "cross_entropy",
+                "early_stop": 1,
+                "metric": "loss",
+                "loss": "ranking",
+                "seed": 42,
                 "n_jobs": 50,
-                "GPU": 0,
-                "sigma": args.sigma,
-                "n_layer": 5,
-                "linear_ndcg": True,
+                "GPU": 1,
+                "lambda_reg": 1.0,
                 "debug": True,  # Set to True for debugging mode
                 "save_path": save_path
             },
@@ -114,7 +109,7 @@ if __name__ == "__main__":
             },
         },
     }
-    
+
 
     # model initialization
     model = init_instance_by_config(task["model"])

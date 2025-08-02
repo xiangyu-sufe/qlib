@@ -10,6 +10,7 @@ _build
 build/
 dist/
 
+*.png
 *.pkl
 *.hd5
 *.csv
