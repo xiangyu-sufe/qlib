@@ -108,8 +108,8 @@ class GRUNDCG(Model):
         self.n_layer = n_layer  
         self.linear_ndcg = linear_ndcg
         self.debug = debug
-        self.logger.info(Fore.RED + "use GPU: %s" % str(self.use_gpu))
-        self.logger.info(Fore.RED + "Debug Mode" if self.debug else "RUN Mode")
+        self.logger.info(Fore.RED + "use GPU: %s" % str(self.use_gpu) + Style.RESET_ALL)
+        self.logger.info(Fore.RED + ("Debug Mode" if self.debug else "RUN Mode") + Style.RESET_ALL)
         self.logger.info(
             "GRU parameters setting:"
             "\nd_feat : {}"
@@ -234,6 +234,7 @@ class GRUNDCG(Model):
         losses = []
 
         for data, weight in data_loader:
+            data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, -1].to(self.device)

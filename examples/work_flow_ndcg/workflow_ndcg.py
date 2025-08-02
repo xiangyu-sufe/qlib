@@ -30,14 +30,14 @@ if __name__ == "__main__":
     learn_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
         {"class": "DropnaLabel"},
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 16}},
-        {"class": "CSZFillna", "kwargs": {"fields_group":"feature", "parallel": True, "n_jobs": 16}},
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 32}},
+        {"class": "Fillna", "kwargs": {}},
     ]
     # 测试集
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 16}},
-        {"class": "CSZFillna", "kwargs": {"fields_group": "feature", "parallel": True, "n_jobs": 16}},
+        {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", }},
+        {"class": "Fillna", "kwargs": {}},
     ]
     start_time = "2011-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
@@ -73,9 +73,9 @@ if __name__ == "__main__":
                 "num_layers": 2,
                 "dropout": 0.4,
                 "n_epochs": 20,
+                "batch_size": 1,
                 "lr": 5e-4,
                 "early_stop": 10,
-                "batch_size": 5000,
                 "metric": "ndcg",
                 "loss": "cross_entropy",
                 "n_jobs": 30,
