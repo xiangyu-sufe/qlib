@@ -1184,7 +1184,7 @@ class BaseProvider:
         fields = list(fields)  # In case of tuple.
         try:
             return DatasetD.dataset(
-                instruments, fields, start_time, end_time, freq, disk_cache, inst_processors=inst_processors
+                instruments, fields, start_time, end_time, freq, disk_cache=disk_cache, inst_processors=inst_processors
             )
         except TypeError:
             return DatasetD.dataset(instruments, fields, start_time, end_time, freq, inst_processors=inst_processors)
