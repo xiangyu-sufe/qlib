@@ -383,6 +383,7 @@ class GRU(Model):
         evals_result["valid"] = []
         evals_result["train_score"] = []
         evals_result["valid_score"] = []
+        best_param = None
         # train
         self.logger.info("training...")
         self.fitted = True
@@ -419,13 +420,15 @@ class GRU(Model):
                     break
 
         self.logger.info("best score: %.6lf @ %d" % (best_score, best_epoch))
-        self.GRU_model.load_state_dict(best_param)
-        torch.save(best_param, save_path)
+        if best_param is not None:
+            self.GRU_model.load_state_dict(best_param)
+            torch.save(best_param, save_path)
 
         if self.use_gpu:
             torch.cuda.empty_cache()
         # 可视化损失
         self.visualize_evals_result(evals_result)
+
 
     def predict(self, dataset):
         if not self.fitted:

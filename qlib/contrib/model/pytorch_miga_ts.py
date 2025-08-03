@@ -222,6 +222,8 @@ class MIGA(Model):
             return self.mse(pred[mask], label[mask], weight[mask])
         elif self.loss == "ranking":
             return ranking_loss(pred[mask], label[mask], self.lambda_reg)
+        elif self.loss == "ic":
+            return ic_loss(pred[mask], label[mask])
 
         raise ValueError("unknown loss `%s`" % self.loss)
 
@@ -267,8 +269,8 @@ class MIGA(Model):
             
             pred = self.MIGA_model(feature.float())
             loss = self.loss_fn(pred, label, weight.to(self.device))
-            
             self.train_optimizer.zero_grad()
+
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.MIGA_model.parameters(), 3.0)
             self.train_optimizer.step()
@@ -329,15 +331,15 @@ class MIGA(Model):
             
             with torch.no_grad():
                 pred = self.MIGA_model(feature.float())
-                loss = self.loss_fn(pred, label, weight.to(self.device))
+                loss = self.metric_fn(pred, label, name = 'loss')
                 score = self.metric_fn(pred, label, name = 'loss')
                 ic_score = self.metric_fn(pred, label, "ic")
                 rankic_score = self.metric_fn(pred, label, "rankic")
                 topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
                 topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
 
-                scores.append(score)
                 losses.append(loss)
+                scores.append(score)
                 ic_scores.append(ic_score)
                 rankic_scores.append(rankic_score)
                 topk_ic_scores.append(topk_ic_score)
@@ -411,6 +413,7 @@ class MIGA(Model):
         # train
         self.logger.info("training...")
         self.fitted = True
+        best_param = None
         
         for step in tqdm(range(self.n_epochs)):
             self.logger.info("Epoch%d:", step)
@@ -436,7 +439,7 @@ class MIGA(Model):
                 best_score = val_score
                 stop_steps = 0
                 best_epoch = step
-                best_param = copy.deepcopy(self.GRU_model.state_dict())
+                best_param = copy.deepcopy(self.MIGA_model.state_dict())
             else:
                 stop_steps += 1
                 if stop_steps >= self.early_stop:
@@ -444,326 +447,40 @@ class MIGA(Model):
                     break
 
         self.logger.info("best score: %.6lf @ %d" % (best_score, best_epoch))
-        self.GRU_model.load_state_dict(best_param)
-        torch.save(best_param, save_path)
+        if best_param is not None:
+            self.MIGA_model.load_state_dict(best_param)
+            torch.save(best_param, save_path)
 
         if self.use_gpu:
             torch.cuda.empty_cache()
         # 可视化损失
         self.visualize_evals_result(evals_result)        
         
-        
-    def fit(self, train_loader, valid_loader=None, verbose=True, clipped=False, omega_scheduler=None):
-        """
-        重写fit函数以适配MIGA模型
-        支持动态调整loss_fn.omega（如指数衰减、分段等）
-        集成TensorBoard，log_dir与save_path一致
-        """
-        # TensorBoard集成
-        self.writer = SummaryWriter(log_dir=self.log_dir) 
-        
-        best_loss = np.inf
-        stop_steps = 0
-        best_param = None
-        best_epoch = None
-        history = {
-            "train": [], "valid": [], "time": [], "train_score": [], "valid_score": [],
-            "train_expert": [], "train_router": [], "valid_expert": [], "valid_router": []
-        }
-        
-        for epoch in tqdm(range(self.n_epochs), desc='Training MIGA Epochs'):
-            if omega_scheduler is not None:
-                new_omega = omega_scheduler(epoch)
-                self.loss_fn.omega = new_omega
-                if verbose:
-                    print(f"[Epoch {epoch+1}] Set omega={new_omega}")
-            if verbose:
-                print(f"Epoch {epoch+1}/{self.n_epochs}")
-
-            # 重置专家监控器的epoch统计
-            self.expert_monitor.reset_epoch_stats()
-
-            # 训练阶段
-            self.model.train()
-            train_losses = []
-            train_expert_losses = []
-            train_router_losses = []
-            train_scores = []
-
-            for feature, label in train_loader:
-                feature = feature.squeeze()
-                label = label.squeeze()
-                feature = feature.to(self.device).float()
-                label = label.to(self.device).float()
-
-                # MIGA模型前向传播
-                outputs = self.model(feature)
-                predictions = outputs['predictions']
-                hidden_representations = outputs['hidden_representations']
-
-                # 收集专家激活数据
-                if 'routing_weights_flat' in outputs and 'top_k_indices' in outputs:
-                    self.expert_monitor.update(
-                        outputs['routing_weights_flat'],
-                        outputs['top_k_indices'],
-                        epoch
-                    )
-
-                # 计算MIGA损失
-                loss_dict = self.loss_fn(predictions, label, hidden_representations)
-                total_loss = loss_dict['total_loss']
-                expert_loss = loss_dict['expert_loss']
-                router_loss = loss_dict['router_loss']
-
-                # 计算评分 (使用IC作为评分指标)
-                score = self._calculate_ic(predictions, label)
-                train_scores.append(score)
-
-                # 反向传播和优化
-                self.optimizer.zero_grad()
-                total_loss.backward()
-
-                if clipped:
-                    torch.nn.utils.clip_grad_value_(self.model.parameters(), 3.0)
-
-                self.optimizer.step()
-
-                # 收集各项损失
-                train_losses.append(total_loss.item())
-                train_expert_losses.append(expert_loss.item())
-                train_router_losses.append(router_loss.item())
-
-            train_loss = np.mean(train_losses)
-            train_expert_loss = np.mean(train_expert_losses)
-            train_router_loss = np.mean(train_router_losses)
-            train_score = np.mean(train_scores)
-            train_score = np.abs(train_score)  # 取绝对值
-
-            history["train"].append(train_loss)
-            history["train_expert"].append(train_expert_loss)
-            history["train_router"].append(train_router_loss)
-            history["train_score"].append(train_score)
-
-            # TensorBoard写入训练指标
-            if self.writer is not None:
-                self.writer.add_scalar('Loss/Train', train_loss, epoch)
-                self.writer.add_scalar('Loss/Expert_Train', train_expert_loss, epoch)
-                self.writer.add_scalar('Loss/Router_Train', train_router_loss, epoch)
-                self.writer.add_scalar('Score/Train', train_score, epoch)
-            
-            # 验证阶段
-            if valid_loader is not None:
-                val_loss, val_expert_loss, val_router_loss, val_score = self.evaluate(valid_loader)
-                val_score = np.abs(val_score)  # 取绝对值
-
-                history["valid"].append(val_loss)
-                history["valid_expert"].append(val_expert_loss)
-                history["valid_router"].append(val_router_loss)
-                history["valid_score"].append(val_score)
-
-                # TensorBoard写入验证指标
-                if self.writer is not None:
-                    self.writer.add_scalar('Loss/Valid', val_loss, epoch)
-                    self.writer.add_scalar('Loss/Expert_Valid', val_expert_loss, epoch)
-                    self.writer.add_scalar('Loss/Router_Valid', val_router_loss, epoch)
-                    self.writer.add_scalar('Score/Valid', val_score, epoch)
-                
-                if verbose:
-                    print(
-                        f"Train - Total: {train_loss:.6f}, Expert: {train_expert_loss:.6f}, Router: {train_router_loss:.6f}, Score: {train_score:.6f}\n"
-                        f"Valid - Total: {val_loss:.6f}, Expert: {val_expert_loss:.6f}, Router: {val_router_loss:.6f}, Score: {val_score:.6f}\n"
-                    )
-
-                    # 记录并打印专家激活统计
-                    self.expert_monitor.record_epoch(epoch)
-                    self.expert_monitor.print_activation_summary(epoch, method='both')
-                    
-                # Early stopping
-                if val_loss < best_loss:
-                    best_loss = val_loss
-                    stop_steps = 0
-                    best_param = self.model.state_dict()
-                    best_epoch = epoch
-                else:
-                    stop_steps += 1
-                    if stop_steps >= self.early_stop:
-                        print("Early stopping triggered.")
-                        break
-            else:
-                if verbose:
-                    print(f"Train loss: {train_loss:.6f}")
-                    
-        # 加载最佳参数
-        if best_param is not None:
-            self.model.load_state_dict(best_param)
-            if best_epoch is not None:
-                history["best_epoch"] = best_epoch
-                
-        # 保存模型
-        if self.save_path is not None:
-            torch.save(self.model.state_dict(), self.save_path)
-            
-        self.evals_result = history
-        
-        # 打印训练结果摘要
-        self._print_training_summary(history, best_epoch, best_loss)
-
-        # 生成专家激活可视化
-        if self.save_path:
-            save_dir = os.path.dirname(self.save_path)
-            self.expert_monitor.visualize_activation_evolution(save_path=save_dir)
-
-        # 关闭TensorBoard writer
-        if self.writer is not None:
-            self.writer.close()
-
-        return history
     
-    def evaluate(self, data_loader):
-        """
-        重写evaluate函数以适配MIGA模型，返回各项损失和IC指标
-        """
-        self.model.eval()
-        losses = []
-        expert_losses = []
-        router_losses = []
-        scores = []
-        all_preds = []
-        all_labels = []
-
-        with torch.no_grad():
-            for feature, label in data_loader:
-                feature = feature.squeeze()
-                label = label.squeeze()
-                feature = feature.to(self.device).float()
-                label = label.to(self.device).float()
-
-                # MIGA模型前向传播
-                outputs = self.model(feature)
-                predictions = outputs['predictions']
-                hidden_representations = outputs['hidden_representations']
-
-                # 计算损失
-                loss_dict = self.loss_fn(predictions, label, hidden_representations)
-                total_loss = loss_dict['total_loss']
-                expert_loss = loss_dict['expert_loss']
-                router_loss = loss_dict['router_loss']
-                score = self._calculate_ic(predictions, label)# 这是一个截面的才能这样做
-
-                losses.append(total_loss.item())
-                expert_losses.append(expert_loss.item())
-                router_losses.append(router_loss.item())
-                scores.append(score)
-
-
-        return np.mean(losses), np.mean(expert_losses), np.mean(router_losses), np.mean(scores)
     
-    def predict(self, data_loader, ground_truth=False):
-        """
-        重写predict函数以适配MIGA模型
-        """
-        self.model.eval()
+    def predict(self, dataset):
+        if not self.fitted:
+            raise ValueError("model is not fitted yet!")
+
+        dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
+        dl_test.config(fillna_type="ffill+bfill")
+        self.test_index = dl_test.get_index()
+        sampler_test = DailyBatchSampler(dl_test)
+        test_loader = DataLoader(dl_test, sampler=sampler_test, num_workers=self.n_jobs)
+        self.MIGA_model.eval()
         preds = []
-        truths = []
-        
-        with torch.no_grad():
-            for feature, label in data_loader:
-                feature = feature.squeeze()
-                feature = feature.to(self.device).float()
-                
-                # MIGA模型前向传播
-                outputs = self.model(feature)
-                predictions = outputs['predictions']
-                
-                preds.append(predictions.cpu().numpy())
-                
-                if ground_truth:
-                    label = label.squeeze()
-                    truths.append(label.cpu().numpy())
-                    
-        preds = np.concatenate(preds)
-        
-        if ground_truth:
-            truths = np.concatenate(truths)
-            return preds, truths
-        else:
-            return preds
+
+        for data in test_loader:
+            data.squeeze_(0) # 去除横截面 dim
+            feature = data[:, :, 0:-1].to(self.device)
+
+            with torch.no_grad():
+                pred = self.MIGA_model(feature.float()).detach().cpu().numpy()
+
+            preds.append(pred)
+
+        return pd.Series(np.concatenate(preds), index=self.test_index)
     
-    def _calculate_ic(self, predictions, targets):
-        """
-        计算信息系数(Information Coefficient)作为评分指标
-        """
-        try:
-            # 展平预测和目标
-            pred_flat = predictions.flatten()
-            target_flat = targets.flatten()
-            
-            # 计算相关系数
-            pred_mean = torch.mean(pred_flat)
-            target_mean = torch.mean(target_flat)
-            
-            pred_centered = pred_flat - pred_mean
-            target_centered = target_flat - target_mean
-            
-            numerator = torch.sum(pred_centered * target_centered)
-            denominator = torch.sqrt(torch.sum(pred_centered ** 2) * torch.sum(target_centered ** 2))
-            
-            # 避免除零
-            if denominator == 0:
-                return 0.0
-                
-            ic = numerator / denominator
-            return ic.item()
-            
-        except Exception:
-            return 0.0
-    
-    def train_step(self, x, y):
-        """
-        单步训练，兼容原有的MIGATrainer接口
-        """
-        self.model.train()
-        
-        # 前向传播
-        outputs = self.model(x)
-        predictions = outputs['predictions']
-        hidden_representations = outputs['hidden_representations']
-        
-        # 计算损失
-        loss_dict = self.loss_fn(predictions, y, hidden_representations)
-        total_loss = loss_dict['total_loss']
-        
-        # 反向传播
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        self.optimizer.step()
-        
-        return {
-            'total_loss': total_loss.item(),
-            'expert_loss': loss_dict['expert_loss'].item(),
-            'router_loss': loss_dict['router_loss'].item()
-        }
-    
-    def evaluate_step(self, x, y):
-        """
-        单步评估，兼容原有的MIGATrainer接口
-        """
-        self.model.eval()
-        
-        with torch.no_grad():
-            outputs = self.model(x)
-            predictions = outputs['predictions']
-            hidden_representations = outputs['hidden_representations']
-            
-            loss_dict = self.loss_fn(predictions, y, hidden_representations)
-            ic = self._calculate_ic(predictions, y)
-            
-        return {
-            'total_loss': loss_dict['total_loss'].item(),
-            'expert_loss': loss_dict['expert_loss'].item(),
-            'router_loss': loss_dict['router_loss'].item(),
-            'ic': ic
-        }
 
     def visualize_evals_result(self, evals_result, save_path=None, train_index=None, val_index=None, test_index=None):
         """

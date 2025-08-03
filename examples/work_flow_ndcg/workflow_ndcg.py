@@ -133,8 +133,8 @@ if __name__ == "__main__":
     label.columns = ["label"]
     
     pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
-    fig = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+    fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
     # 保存图
     fig.savefig(f"{save_path}/score_ic_graph.png")
-    fig = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
+    fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
     fig.savefig(f"{save_path}/top_score_ic_graph.png")
