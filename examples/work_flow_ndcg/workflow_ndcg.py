@@ -27,11 +27,13 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
-    parser.add_argument("--sigma", type=float, default=1.0)
+    parser.add_argument("--sigma", type=float, default=3.03)
+    parser.add_argument("--start", type=str, required=True, help="Start date for the dataset")
     args = parser.parse_args()
     save_path = args.save_path
+    start_time = args.start
 
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
     qlib.init(provider_uri=provider_uri, region=REG_CN)
@@ -49,7 +51,7 @@ if __name__ == "__main__":
         {"class": "DropnaLabel"},
     ]
 
-    start_time = "2018-12-31"  # 整个开始日期
+    start_time = start_time  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2020-12-31" # 验证集结束
