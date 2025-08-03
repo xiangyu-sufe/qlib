@@ -131,6 +131,7 @@ class GRU(Model):
             "\nuse_GPU : {}"
             "\nseed : {}"
             "\ndebug : {}"
+            "\nlambda_reg : {}"
             "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
@@ -149,6 +150,7 @@ class GRU(Model):
                 seed,
                 debug,
                 save_path,
+                lambda_reg,
             )
         )
 

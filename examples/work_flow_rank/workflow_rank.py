@@ -47,7 +47,7 @@ if __name__ == "__main__":
         {"class": "CSZScoreNorm", "kwargs": {"fields_group": "label"}},
     ]
 
-    start_time = "2009-12-31"  # 整个开始日期
+    start_time = "2014-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2020-12-31" # 验证集结束
