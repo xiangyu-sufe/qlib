@@ -25,3 +25,20 @@ def compute_layerwise_grad_norm(model):
             layer_grad_norms[name].append(norm)
             
     return layer_grad_norms
+
+def coverage_metric(y_pred, data):
+    
+    y_true = data.get_label()
+    coverage = (y_true <= y_pred).astype(float).mean()
+    return 'coverage', coverage, True
+
+def get_label(dataset, segment = "test"):
+    """
+    获取与预测结果对齐的标签 DataFrame
+    """
+    handler = dataset.handler
+    start, end = dataset.segments[segment]
+    
+    label_data = handler._infer.loc[slice(start, end), "label"]
+        
+    return label_data

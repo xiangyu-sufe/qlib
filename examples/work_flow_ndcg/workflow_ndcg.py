@@ -9,7 +9,9 @@ The interface of (1) is `qrun XXX.yaml`.  The interface of (2) is script like th
 """
 import qlib
 from qlib.constant import REG_CN
+from qlib.contrib.report import analysis_model, analysis_position
 from qlib.utils import init_instance_by_config, flatten_dict
+from qlib.utils.hxy_utils import get_label
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
 from qlib.tests.data import GetData
@@ -47,7 +49,7 @@ if __name__ == "__main__":
         {"class": "DropnaLabel"},
     ]
 
-    start_time = "2014-12-31"  # 整个开始日期
+    start_time = "2018-12-31"  # 整个开始日期
     fit_end_time = "2019-12-31" # 训练集结束
     val_start_time = "2020-01-01" # 验证集开始
     val_end_time = "2020-12-31" # 验证集结束
@@ -80,7 +82,7 @@ if __name__ == "__main__":
                 "hidden_size": 64,
                 "num_layers": 2,
                 "dropout": 0.0,
-                "n_epochs": 40,
+                "n_epochs": 1,
                 "batch_size": 1,
                 "lr": args.lr,
                 "early_stop": 10,
@@ -120,5 +122,14 @@ if __name__ == "__main__":
     model = init_instance_by_config(task["model"])
     dataset = init_instance_by_config(task["dataset"])
     model.fit(dataset)
-    pred = model.predict(dataset)
-    print(pred.head())
+    score = model.predict(dataset)
+    score.name = 'score'
+    score = score.to_frame()
+    print(score.head())
+    # 画图
+    label = get_label(dataset, segment="test")
+    label.columns = ["label"]
+    
+    pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
+    fig = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+    fig = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
