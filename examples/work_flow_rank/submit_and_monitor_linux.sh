@@ -36,12 +36,16 @@ show_help() {
     echo "参数类型:"
     echo "  lr_only     - 仅学习率参数"
     echo "  lr_gpu      - 学习率列表和可用GPU ID列表（一一对应）"
+    echo "  lr_lambda   - 学习率和lambda_reg的笛卡尔积"
+    echo "  lr_gpu_lambda - 学习率、GPU和lambda_reg的组合"
     echo "  custom      - 自定义参数组合"
     echo ""
     echo "示例:"
     echo "  $0 lr_only \"0.001,0.005,0.01,0.05,0.1\""
     echo "  $0 lr_gpu \"0.001,0.005,0.01\" \"0,1,2\""
-    echo "  $0 custom \"0.001:0,0.005:1,0.01:2\""
+    echo "  $0 lr_lambda \"0.001,0.005\" \"0.1,0.5,1.0\""
+    echo "  $0 lr_gpu_lambda \"0.001,0.005\" \"0,1\" \"0.1,0.5\""
+    echo "  $0 custom \"0.001:0:0.1,0.005:1:0.5\""
     echo ""
     echo "配置:"
     echo "  最大GPU任务数: $max_gpu_jobs"
@@ -115,6 +119,43 @@ case "$param_type" in
         done
         ;;
         
+    "lr_lambda")
+        if [ "$#" -ne 2 ]; then
+            print_error "lr_lambda模式需要2个参数：学习率列表和lambda_reg列表"
+            exit 1
+        fi
+        IFS=',' read -ra lrs <<< "$1"
+        IFS=',' read -ra lambda_regs <<< "$2"
+        
+        # 生成任务列表，GPU将在提交时动态分配
+        tasks=()
+        for lr in "${lrs[@]}"; do
+            for lambda_reg in "${lambda_regs[@]}"; do
+                tasks+=("lr:$lr,lambda_reg:$lambda_reg")
+            done
+        done
+        ;;
+        
+    "lr_gpu_lambda")
+        if [ "$#" -ne 3 ]; then
+            print_error "lr_gpu_lambda模式需要3个参数：学习率列表、可用GPU ID列表和lambda_reg列表"
+            exit 1
+        fi
+        IFS=',' read -ra lrs <<< "$1"
+        IFS=',' read -ra available_gpus <<< "$2"
+        IFS=',' read -ra lambda_regs <<< "$3"
+        
+        # 生成任务列表，GPU将在提交时动态分配
+        tasks=()
+        for lr in "${lrs[@]}"; do
+            for gpu in "${available_gpus[@]}"; do
+                for lambda_reg in "${lambda_regs[@]}"; do
+                    tasks+=("lr:$lr,gpu:$gpu,lambda_reg:$lambda_reg")
+                done
+            done
+        done
+        ;;
+        
     "custom")
         if [ "$#" -ne 1 ]; then
             print_error "custom模式需要1个参数：自定义参数组合"
@@ -179,7 +220,7 @@ check_gpu_availability() {
 
 # 获取可用GPU的函数
 get_available_gpu() {
-    if [[ "$param_type" == "lr_gpu" ]]; then
+    if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
         for gpu in "${available_gpus[@]}"; do
             if [[ "${gpu_usage[$gpu]}" == "FREE" ]] && check_gpu_availability "$gpu"; then
                 echo "$gpu"
@@ -204,7 +245,7 @@ get_available_gpu() {
 }
 
 # 初始化GPU使用情况
-if [[ "$param_type" == "lr_gpu" ]]; then
+if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
     print_info "检查GPU可用性..."
     available_gpus_checked=()
     for gpu in "${available_gpus[@]}"; do
@@ -226,7 +267,7 @@ fi
 
 print_info "📋 总任务数: ${#tasks[@]}"
 print_info "📋 最大GPU任务数: $max_gpu_jobs"
-if [[ "$param_type" == "lr_gpu" ]]; then
+if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
     print_info "📋 可用GPU: ${available_gpus[*]}"
 fi
 
@@ -237,34 +278,58 @@ submit_task() {
     
     # 解析任务参数
     local lr=""
+    local gpu=""
+    local lambda_reg=""
     
     if [[ "$task" =~ lr:([^,]+) ]]; then
         lr="${BASH_REMATCH[1]}"
     fi
     
+    if [[ "$task" =~ gpu:([^,]+) ]]; then
+        gpu="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$task" =~ lambda_reg:([^,]+) ]]; then
+        lambda_reg="${BASH_REMATCH[1]}"
+    fi
+    
+    # 调试输出
+    print_info "解析任务参数: task=$task, lr=$lr, gpu=$gpu, lambda_reg=$lambda_reg"
+    
     # 动态分配GPU
-    local gpu=$(get_available_gpu)
     if [[ -z "$gpu" ]]; then
-        print_error "没有可用的GPU"
-        return 1
+        gpu=$(get_available_gpu)
+        if [[ -z "$gpu" ]]; then
+            print_error "没有可用的GPU"
+            return 1
+        fi
     fi
     
     # 标记GPU为使用中
-    if [[ "$param_type" == "lr_gpu" ]]; then
+    if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
         gpu_usage["$gpu"]="BUSY"
     fi
     
     # 根据学习率生成save_path，避免特殊字符
     local save_path="model_lr${lr//./_}"
+    if [[ -n "$lambda_reg" ]]; then
+        save_path="${save_path}_lambda${lambda_reg//./_}"
+    fi
     
     # 构建命令 - 修复CUDA_VISIBLE_DEVICES设置
     local cmd="CUDA_VISIBLE_DEVICES=$gpu python workflow_rank.py --lr $lr --gpu $gpu --save_path $save_path"
+    if [[ -n "$lambda_reg" ]]; then
+        cmd="$cmd --lambda_reg $lambda_reg"
+    fi
     
     print_info "🚀 提交任务: $task"
     print_info "分配GPU: $gpu"
     print_info "CUDA_VISIBLE_DEVICES: $gpu"
     print_info "执行命令: $cmd"
     print_info "保存路径: $save_path"
+    if [[ -n "$lambda_reg" ]]; then
+        print_info "Lambda_reg: $lambda_reg"
+    fi
     
     # 在后台运行任务
     eval "$cmd" > "logs/grurank_lr${lr}_gpu${gpu}_$(date +%Y%m%d_%H%M%S).log" 2>&1 &
@@ -298,7 +363,7 @@ check_job_status() {
         
         # 释放GPU资源
         local gpu="${job_params[${task_id}_gpu]}"
-        if [[ -n "$gpu" && "$param_type" == "lr_gpu" ]]; then
+        if [[ -n "$gpu" && ("$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda") ]]; then
             gpu_usage["$gpu"]="FREE"
             print_info "释放GPU $gpu"
         fi
@@ -338,7 +403,7 @@ while true; do
     print_info "当前运行任务数: $running_jobs/$max_gpu_jobs"
     
     # 显示GPU使用情况
-    if [[ "$param_type" == "lr_gpu" ]]; then
+    if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
         echo "📊 GPU使用情况:"
         for gpu in "${available_gpus[@]}"; do
             local status="${gpu_usage[$gpu]}"

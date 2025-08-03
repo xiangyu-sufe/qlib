@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--lambda_reg", type=float, default=1.0)
     args = parser.parse_args()
     save_path = args.save_path
 
@@ -77,16 +78,16 @@ if __name__ == "__main__":
                 "hidden_size": 64,
                 "num_layers": 2,
                 "dropout": 0.0,
-                "n_epochs": 1,
+                "n_epochs": 40,
                 "batch_size": 1,
                 "lr": args.lr,
-                "early_stop": 1,
+                "early_stop": 10,
                 "metric": "loss",
                 "loss": "ranking",
-                "seed": 42,
+                "seed": 0,
                 "n_jobs": 50,
                 "GPU": 0,  # 当使用CUDA_VISIBLE_DEVICES时，总是使用设备0
-                "lambda_reg": 1.0,
+                "lambda_reg": args.lambda_reg,
                 "debug": True,  # Set to True for debugging mode
                 "save_path": save_path
             },
