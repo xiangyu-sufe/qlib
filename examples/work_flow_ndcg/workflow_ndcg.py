@@ -11,7 +11,7 @@ import qlib
 from qlib.constant import REG_CN
 from qlib.contrib.report import analysis_model, analysis_position
 from qlib.utils import init_instance_by_config, flatten_dict
-from qlib.utils.hxy_utils import get_label
+from qlib.utils.hxy_utils import get_label, prepare_task_pool
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
 from qlib.tests.data import GetData
@@ -20,26 +20,52 @@ from qlib.data.dataset.handler import DataHandlerLP
 from torch.utils.data import Sampler
 import pandas as pd
 import numpy as np
-
+import os
 
 if __name__ == "__main__":
     # 数据参数
     import argparse
 
     parser = argparse.ArgumentParser()
+
+    parser.add_argument("--onlyrun_task_id", type=int, default=None, help="Only run task id")
+    parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
+    parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
+    # 数据集长度参数
+    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
+    parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
+    parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
+
+    # 时间范围参数
+    parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
+    parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
+    # 模型参数
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
-    parser.add_argument("--start", type=str, required=True, help="Start date for the dataset")
     args = parser.parse_args()
     save_path = args.save_path
-    start_time = args.start
 
+    root_dir = os.path.expanduser('~')
+    alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
     qlib.init(provider_uri=provider_uri, region=REG_CN)
     market = "csiall"
     benchmark = "SH000905"
-    # 
+
+    task_config = {
+        'train': args.train_length,
+        'valid': args.valid_length,
+        'test': args.test_length,
+    }
+
+    only_run_task_pool = prepare_task_pool(args.onlyrun_task_id,
+                                        task_config,
+                                        path = alphamat_path,
+                                        start_time = args.start_time,
+                                        end_time = args.end_time)
+
+    # 数据参数
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
         # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
@@ -51,90 +77,147 @@ if __name__ == "__main__":
         {"class": "DropnaLabel"},
     ]
 
-    start_time = start_time  # 整个开始日期
-    fit_end_time = "2019-12-31" # 训练集结束
-    val_start_time = "2020-01-01" # 验证集开始
-    val_end_time = "2020-12-31" # 验证集结束
-    test_start_time = "2021-01-01" # 测试集开始
-    end_time = "2021-12-31" # 整个结束日期
-    ###################################
-    # train model
-    ###################################
+    # 根据only_run_task_pool进行迭代
+    for task_id, segments in only_run_task_pool.items():
+        print(f"开始处理任务 {task_id}")
+        segments = segments['segments']
+        # 使用segments中的日期
+        start_time = segments['train'][0]  # 训练开始日期
+        fit_end_time = segments['train'][1]  # 训练结束日期
+        val_start_time = segments['valid'][0]  # 验证开始日期
+        val_end_time = segments['valid'][1]  # 验证结束日期
+        test_start_time = segments['test'][0]  # 测试开始日期
+        test_end_time = segments['test'][1]  # 测试结束日期
+        
+        # 红色打印日期信息
+        print(f"\033[31m训练日期: {start_time} - {fit_end_time}\033[0m")
+        print(f"\033[31m验证日期: {val_start_time} - {val_end_time}\033[0m")
+        print(f"\033[31m测试日期: {test_start_time} - {test_end_time}\033[0m")
+        
+        print(f"时间范围: 训练({start_time} - {fit_end_time}), 验证({val_start_time} - {val_end_time}), 测试({test_start_time} - {test_end_time})")
 
+        data_handler_config = {
+            "start_time": start_time,
+            "end_time": test_end_time,
+            "fit_start_time": start_time,
+            "fit_end_time": fit_end_time,
+            "instruments": market,
+            "infer_processors":infer_processors,
+            "learn_processors":learn_processors,
+            # "infer_processors":[],
+            # "learn_processors":[],
+            "drop_raw": True,
+        }   
 
-    data_handler_config = {
-        "start_time": start_time,
-        "end_time": end_time,
-        "fit_start_time": start_time,
-        "fit_end_time": fit_end_time,
-        "instruments": market,
-        "infer_processors":infer_processors,
-        "learn_processors":learn_processors,
-        # "infer_processors":[],
-        # "learn_processors":[],
-        "drop_raw": True,
-    }   
-
-    task = {
-        "model": {
-            "class": "GRUNDCG",
-            "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
-            "kwargs": {
-                "d_feat": 158,
-                "hidden_size": 64,
-                "num_layers": 2,
-                "dropout": 0.0,
-                "n_epochs": 1,
-                "batch_size": 1,
-                "lr": args.lr,
-                "early_stop": 10,
-                "metric": "ndcg",
-                "loss": "cross_entropy",
-                "n_jobs": 50,
-                "GPU": 0,
-                "sigma": args.sigma,
-                "n_layer": 5,
-                "linear_ndcg": True,
-                "debug": True,  # Set to True for debugging mode
-                "save_path": save_path
-            },
-        },
-        "dataset": {
-            "class": "TSDatasetH",
-            "module_path": "qlib.data.dataset",
-            "kwargs": {
-                "handler": {
-                    "class": "Alpha158",
-                    "module_path": "qlib.contrib.data.handler",
-                    "kwargs": data_handler_config,
+        task = {
+            "model": {
+                "class": "GRUNDCG",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
+                "kwargs": {
+                    "d_feat": 158,
+                    "hidden_size": 64,
+                    "num_layers": 2,
+                    "dropout": 0.0,
+                    "n_epochs": 1,
+                    "batch_size": 1,
+                    "lr": args.lr,
+                    "early_stop": 10,
+                    "metric": "ndcg",
+                    "loss": "cross_entropy",
+                    "n_jobs": 50,
+                    "GPU": 0,
+                    "seed": args.onlyrun_seed_id,
+                    "sigma": args.sigma,
+                    "n_layer": 5,
+                    "linear_ndcg": True,
+                    "debug": True,  # Set to True for debugging mode
+                    "save_path": f"{save_path}/task_{task_id}"
                 },
-                "segments": {
-                    "train": (start_time, fit_end_time),
-                    "valid": (val_start_time, val_end_time),
-                    "test": (test_start_time, end_time),
-                },
-                "enable_cache": True ,
-                
             },
-        },
-    }
-    
+            "dataset": {
+                "class": "TSDatasetH",
+                "module_path": "qlib.data.dataset",
+                "kwargs": {
+                    "handler": {
+                        "class": "Alpha158",
+                        "module_path": "qlib.contrib.data.handler",
+                        "kwargs": data_handler_config,
+                    },
+                    "segments": {
+                        "train": (start_time, fit_end_time),
+                        "valid": (val_start_time, val_end_time),
+                        "test": (test_start_time, test_end_time),
+                    },
+                },
+            },
+        }
+        
 
-    # model initialization
-    model = init_instance_by_config(task["model"])
-    dataset = init_instance_by_config(task["dataset"])
-    model.fit(dataset)
-    score = model.predict(dataset)
-    score.name = 'score'
-    score = score.to_frame()
-    print(score.head())
-    # 测试集的图
-    label = get_label(dataset, segment="test")
-    label.columns = ["label"]
-    
-    pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
-    fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
-    # 保存图
-    fig.savefig(f"{save_path}/score_ic_graph.png")
-    fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
-    fig.savefig(f"{save_path}/top_score_ic_graph.png")
+        # model initialization
+        model = init_instance_by_config(task["model"])
+        dataset = init_instance_by_config(task["dataset"])
+        model.fit(dataset)
+        score = model.predict(dataset)
+        score.name = 'score'
+        # 保存预测值
+        score.to_csv(f"{save_path}/task_{task_id}/test.csv")
+        score = score.to_frame()
+        print(score.head())
+        # 测试集的图
+        label = get_label(dataset, segment="test")
+        label.columns = ["label"]
+        
+        pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
+        
+        # 确保保存目录存在
+        import os
+        os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
+        
+        # 保存图片 - 使用多种方法
+        try:
+            fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+            # 方法1: 尝试保存为PNG
+            try:
+                fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
+                print(f"✅ 成功保存 score_ic_graph.png")
+            except Exception as png_error:
+                print(f"⚠️ PNG保存失败: {png_error}")
+                # 方法2: 保存为HTML文件
+                try:
+                    fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
+                    print(f"✅ 成功保存 score_ic_graph.html (可在浏览器中查看)")
+                except Exception as html_error:
+                    print(f"⚠️ HTML保存失败: {html_error}")
+                    # 方法3: 保存为JSON文件
+                    try:
+                        fig.write_json(f"{save_path}/task_{task_id}/score_ic_graph.json")
+                        print(f"✅ 成功保存 score_ic_graph.json (plotly格式)")
+                    except Exception as json_error:
+                        print(f"❌ 所有保存方法都失败: {json_error}")
+        except Exception as e:
+            print(f"❌ 生成 score_ic_graph 时出错: {e}")
+            
+        try:
+            fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
+            # 方法1: 尝试保存为PNG
+            try:
+                fig.write_image(f"{save_path}/task_{task_id}/top_score_ic_graph.png")
+                print(f"✅ 成功保存 top_score_ic_graph.png")
+            except Exception as png_error:
+                print(f"⚠️ PNG保存失败: {png_error}")
+                # 方法2: 保存为HTML文件
+                try:
+                    fig.write_html(f"{save_path}/task_{task_id}/top_score_ic_graph.html")
+                    print(f"✅ 成功保存 top_score_ic_graph.html (可在浏览器中查看)")
+                except Exception as html_error:
+                    print(f"⚠️ HTML保存失败: {html_error}")
+                    # 方法3: 保存为JSON文件
+                    try:
+                        fig.write_json(f"{save_path}/task_{task_id}/top_score_ic_graph.json")
+                        print(f"✅ 成功保存 top_score_ic_graph.json (plotly格式)")
+                    except Exception as json_error:
+                        print(f"❌ 所有保存方法都失败: {json_error}")
+        except Exception as e:
+            print(f"❌ 生成 top_score_ic_graph 时出错: {e}")
+        
+        print(f"任务 {task_id} 完成")
