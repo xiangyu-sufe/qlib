@@ -46,7 +46,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     save_path = args.save_path
     os.makedirs(save_path, exist_ok=True)
-    
+
     root_dir = os.path.expanduser('~')
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
@@ -119,13 +119,13 @@ if __name__ == "__main__":
                     "hidden_size": 64,
                     "num_layers": 2,
                     "dropout": 0.0,
-                    "n_epochs": 1,
+                    "n_epochs": 100,
                     "batch_size": 1,
                     "lr": args.lr,
                     "early_stop": 10,
                     "metric": "ndcg",
                     "loss": "cross_entropy",
-                    "n_jobs": 50,
+                    "n_jobs": 24,
                     "GPU": 0,
                     "seed": args.onlyrun_seed_id,
                     "sigma": args.sigma,
