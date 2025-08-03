@@ -407,7 +407,7 @@ class GRUNDCG(Model):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
             result = self.train_epoch(train_loader) 
-            evals_result["train"].append(result["train"]) 
+            # evals_result["train"].append(result["train"]) 
             evals_result["train_score"].append(result["score"]) 
             self.logger.info("evaluating...")
             result = self.test_epoch(valid_loader)
@@ -418,9 +418,8 @@ class GRUNDCG(Model):
                 f"topk_ic: {result['topk_ic']:.6f}, topk_rankic: {result['topk_rankic']:.6f}"
                 f"{Style.RESET_ALL}"
             )
-            # evals_result["train"].append(train_score)
             val_score = result["score"]
-            evals_result["valid"].append(result["loss"])
+            evals_result["valid"].append(result["rankic"])
             evals_result["valid_score"].append(val_score)
 
             if val_score > best_score:
