@@ -45,7 +45,8 @@ if __name__ == "__main__":
     parser.add_argument("--sigma", type=float, default=3.03)
     args = parser.parse_args()
     save_path = args.save_path
-
+    os.makedirs(save_path, exist_ok=True)
+    
     root_dir = os.path.expanduser('~')
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
     provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
