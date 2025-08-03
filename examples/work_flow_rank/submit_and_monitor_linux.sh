@@ -53,6 +53,38 @@ show_help() {
     echo "  监控状态间隔: ${monitor_interval}秒"
 }
 
+# 检查GPU可用性的函数
+check_gpu_availability() {
+    local gpu_id="$1"
+    
+    # 检查GPU是否存在
+    if ! nvidia-smi -i "$gpu_id" >/dev/null 2>&1; then
+        return 1
+    fi
+    
+    # 检查GPU内存使用情况
+    local memory_info=$(nvidia-smi -i "$gpu_id" --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    local memory_used=$(echo "$memory_info" | cut -d',' -f1)
+    local memory_total=$(echo "$memory_info" | cut -d',' -f2)
+    
+    # 如果内存使用率超过80%，认为不可用
+    if [ "$memory_used" -gt $((memory_total * 8 / 10)) ]; then
+        return 1
+    fi
+    
+    # 检查GPU利用率
+    local gpu_util=$(nvidia-smi -i "$gpu_id" --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null)
+    if [ $? -eq 0 ] && [ "$gpu_util" -gt 90 ]; then
+        return 1
+    fi
+    
+    return 0
+}
+
 # 显示GPU信息的函数
 show_gpu_info() {
     print_info "系统GPU信息:"
@@ -186,64 +218,6 @@ pending_tasks=("${tasks[@]}")
 submitted_tasks=()
 completed_tasks=()
 
-# 检查GPU可用性的函数
-check_gpu_availability() {
-    local gpu_id="$1"
-    
-    # 检查GPU是否存在
-    if ! nvidia-smi -i "$gpu_id" >/dev/null 2>&1; then
-        return 1
-    fi
-    
-    # 检查GPU内存使用情况
-    local memory_info=$(nvidia-smi -i "$gpu_id" --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        return 1
-    fi
-    
-    local memory_used=$(echo "$memory_info" | cut -d',' -f1)
-    local memory_total=$(echo "$memory_info" | cut -d',' -f2)
-    
-    # 如果内存使用率超过80%，认为不可用
-    if [ "$memory_used" -gt $((memory_total * 8 / 10)) ]; then
-        return 1
-    fi
-    
-    # 检查GPU利用率
-    local gpu_util=$(nvidia-smi -i "$gpu_id" --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null)
-    if [ $? -eq 0 ] && [ "$gpu_util" -gt 90 ]; then
-        return 1
-    fi
-    
-    return 0
-}
-
-# 获取可用GPU的函数
-get_available_gpu() {
-    if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
-        for gpu in "${available_gpus[@]}"; do
-            if [[ "${gpu_usage[$gpu]}" == "FREE" ]] && check_gpu_availability "$gpu"; then
-                echo "$gpu"
-                return 0
-            fi
-        done
-        echo ""  # 没有可用GPU
-    else
-        # 对于lr_only模式，检查GPU 0是否可用，如果不可用则尝试其他GPU
-        if check_gpu_availability "0"; then
-            echo "0"
-        elif check_gpu_availability "1"; then
-            echo "1"
-        elif check_gpu_availability "2"; then
-            echo "2"
-        elif check_gpu_availability "3"; then
-            echo "3"
-        else
-            echo ""
-        fi
-    fi
-}
-
 # 初始化GPU使用情况
 if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
     print_info "检查GPU可用性..."
@@ -263,13 +237,91 @@ if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
         print_error "没有可用的GPU！"
         exit 1
     fi
+else
+    # 对于lr_only和lr_lambda模式，初始化默认GPU列表
+    available_gpus=(0 1 2 3)
+    for gpu in "${available_gpus[@]}"; do
+        gpu_usage["$gpu"]="FREE"
+    done
 fi
 
 print_info "📋 总任务数: ${#tasks[@]}"
 print_info "📋 最大GPU任务数: $max_gpu_jobs"
-if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
-    print_info "📋 可用GPU: ${available_gpus[*]}"
-fi
+print_info "📋 可用GPU: ${available_gpus[*]}"
+
+# 提交任务到指定GPU的函数
+submit_task_to_gpu() {
+    local task="$1"
+    local task_id="$2"
+    local target_gpu="$3"
+    
+    # 解析任务参数
+    local lr=""
+    local gpu=""
+    local lambda_reg=""
+    
+    if [[ "$task" =~ lr:([^,]+) ]]; then
+        lr="${BASH_REMATCH[1]}"
+    fi
+    
+    if [[ "$task" =~ gpu:([^,]+) ]]; then
+        gpu="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$task" =~ lambda_reg:([^,]+) ]]; then
+        lambda_reg="${BASH_REMATCH[1]}"
+    fi
+    
+    # 使用指定的GPU
+    gpu="$target_gpu"
+    
+    # 检查GPU是否可用
+    if ! check_gpu_availability "$gpu"; then
+        print_error "GPU $gpu 不可用"
+        return 1
+    fi
+    
+    # 检查GPU是否空闲
+    local gpu_running=$(get_gpu_running_jobs "$gpu")
+    if [ "$gpu_running" -gt 0 ]; then
+        print_error "GPU $gpu 已有任务在运行"
+        return 1
+    fi
+    
+    # 标记GPU为使用中
+    gpu_usage["$gpu"]="BUSY"
+    
+    # 根据学习率生成save_path，避免特殊字符
+    local save_path="model_lr${lr//./_}"
+    if [[ -n "$lambda_reg" ]]; then
+        save_path="${save_path}_lambda${lambda_reg//./_}"
+    fi
+    
+    # 构建命令
+    local cmd="CUDA_VISIBLE_DEVICES=$gpu python workflow_rank.py --lr $lr --gpu $gpu --save_path $save_path"
+    if [[ -n "$lambda_reg" ]]; then
+        cmd="$cmd --lambda_reg $lambda_reg"
+    fi
+    
+    print_info "🚀 提交任务到GPU $gpu: $task"
+    print_info "CUDA_VISIBLE_DEVICES: $gpu"
+    print_info "执行命令: $cmd"
+    print_info "保存路径: $save_path"
+    if [[ -n "$lambda_reg" ]]; then
+        print_info "Lambda_reg: $lambda_reg"
+    fi
+    
+    # 在后台运行任务
+    eval "$cmd" > "logs/grurank_lr${lr}_gpu${gpu}_$(date +%Y%m%d_%H%M%S).log" 2>&1 &
+    local pid=$!
+    
+    job_pids["$task_id"]="$pid"
+    job_status["$task_id"]="RUNNING"
+    job_params["$task_id"]="$task"
+    job_params["${task_id}_gpu"]="$gpu"
+    print_success "提交成功: $task (pid=$pid, gpu=$gpu)"
+    return 0
+}
 
 # 提交任务的函数
 submit_task() {
@@ -363,13 +415,67 @@ check_job_status() {
         
         # 释放GPU资源
         local gpu="${job_params[${task_id}_gpu]}"
-        if [[ -n "$gpu" && ("$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda") ]]; then
+        if [[ -n "$gpu" ]]; then
             gpu_usage["$gpu"]="FREE"
             print_info "释放GPU $gpu"
         fi
         
         return 0
     fi
+}
+
+# 获取可用GPU的函数
+get_available_gpu() {
+    if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
+        # 平均分配GPU
+        for gpu in "${available_gpus[@]}"; do
+            if [[ "${gpu_usage[$gpu]}" == "FREE" ]] && check_gpu_availability "$gpu"; then
+                echo "$gpu"
+                return 0
+            fi
+        done
+        echo ""  # 没有可用GPU
+    else
+        # 对于lr_only和lr_lambda模式，轮询分配GPU
+        local gpu_count=${#available_gpus[@]}
+        if [ $gpu_count -eq 0 ]; then
+            # 如果没有指定GPU，使用默认的0,1,2,3
+            available_gpus=(0 1 2 3)
+            gpu_count=4
+        fi
+        
+        # 计算当前应该使用哪个GPU（轮询）
+        local current_task_count=$(get_running_jobs)
+        local target_gpu=$((current_task_count % gpu_count))
+        
+        # 检查目标GPU是否可用
+        if check_gpu_availability "${available_gpus[$target_gpu]}" && [[ "${gpu_usage[${available_gpus[$target_gpu]}]}" == "FREE" ]]; then
+            echo "${available_gpus[$target_gpu]}"
+        else
+            # 如果目标GPU不可用，尝试其他GPU
+            for gpu in "${available_gpus[@]}"; do
+                if check_gpu_availability "$gpu" && [[ "${gpu_usage[$gpu]}" == "FREE" ]]; then
+                    echo "$gpu"
+                    return 0
+                fi
+            done
+            echo ""
+        fi
+    fi
+}
+
+# 获取指定GPU上运行的任务数
+get_gpu_running_jobs() {
+    local gpu_id="$1"
+    local count=0
+    for task_id in "${!job_pids[@]}"; do
+        local pid="${job_pids[$task_id]}"
+        local gpu="${job_params[${task_id}_gpu]}"
+        if kill -0 "$pid" 2>/dev/null && [[ "$gpu" == "$gpu_id" ]]; then
+            ((count++))
+        fi
+    done
+    echo "$count"
 }
 
 # 获取当前运行的任务数
@@ -400,36 +506,42 @@ while true; do
     
     # 获取当前运行的任务数
     running_jobs=$(get_running_jobs)
-    print_info "当前运行任务数: $running_jobs/$max_gpu_jobs"
+    print_info "当前运行任务数: $running_jobs"
     
     # 显示GPU使用情况
-    if [[ "$param_type" == "lr_gpu" || "$param_type" == "lr_gpu_lambda" ]]; then
-        echo "📊 GPU使用情况:"
-        for gpu in "${available_gpus[@]}"; do
-            local status="${gpu_usage[$gpu]}"
-            if [[ "$status" == "FREE" ]]; then
-                echo "  GPU $gpu: 🟢 空闲"
-            else
-                echo "  GPU $gpu: 🔴 使用中"
-            fi
-        done
-    fi
-    
-    # 如果有待提交的任务且未达到最大GPU数，则提交新任务
-    if [ ${#pending_tasks[@]} -gt 0 ] && [ "$running_jobs" -lt "$max_gpu_jobs" ]; then
-        task="${pending_tasks[0]}"
-        task_id="task_$(date +%s)_$RANDOM"
-        
-        if submit_task "$task" "$task_id"; then
-            submitted_tasks+=("$task_id")
-            pending_tasks=("${pending_tasks[@]:1}")  # 移除已提交的任务
-            print_info "剩余待提交任务: ${#pending_tasks[@]}"
+    echo "📊 GPU使用情况:"
+    for gpu in "${available_gpus[@]}"; do
+        gpu_running=$(get_gpu_running_jobs "$gpu")
+        status="${gpu_usage[$gpu]}"
+        if [[ "$status" == "FREE" && "$gpu_running" -eq 0 ]]; then
+            echo "  GPU $gpu: 🟢 空闲 (0个任务)"
+        else
+            echo "  GPU $gpu: 🔴 使用中 ($gpu_running个任务)"
         fi
-    elif [ ${#pending_tasks[@]} -eq 0 ] && [ "$running_jobs" -eq 0 ]; then
+    done
+    
+    # 为每个GPU检查是否可以提交新任务
+    for gpu in "${available_gpus[@]}"; do
+        gpu_running=$(get_gpu_running_jobs "$gpu")
+        
+        # 如果GPU空闲且有待提交的任务，则提交新任务
+        if [ "$gpu_running" -eq 0 ] && [ ${#pending_tasks[@]} -gt 0 ] && check_gpu_availability "$gpu"; then
+            task="${pending_tasks[0]}"
+            task_id="task_$(date +%s)_$RANDOM"
+            
+            # 强制分配到这个GPU
+            if submit_task_to_gpu "$task" "$task_id" "$gpu"; then
+                submitted_tasks+=("$task_id")
+                pending_tasks=("${pending_tasks[@]:1}")  # 移除已提交的任务
+                print_info "GPU $gpu 提交新任务，剩余待提交任务: ${#pending_tasks[@]}"
+            fi
+        fi
+    done
+    
+    # 检查是否所有任务都已完成
+    if [ ${#pending_tasks[@]} -eq 0 ] && [ "$running_jobs" -eq 0 ]; then
         print_success "所有任务已完成！"
         break
-    else
-        print_info "等待任务完成或资源释放..."
     fi
     
     # 显示统计信息
