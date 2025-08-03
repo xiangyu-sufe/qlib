@@ -514,7 +514,8 @@ class MIGA(Model):
             feature = data[:, :, 0:-1].to(self.device)
 
             with torch.no_grad():
-                pred = self.MIGA_model(feature.float()).detach().cpu().numpy()
+                output = self.MIGA_model(feature.float())
+                pred = output['predictions'].detach().cpu().numpy()
 
             preds.append(pred)
 
