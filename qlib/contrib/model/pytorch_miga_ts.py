@@ -79,12 +79,16 @@ class MIGA(Model):
         metric="ic",
         batch_size=2000,
         early_stop=20,
-        loss="ranking",
+        loss="miga",
         optimizer="adam",
         n_jobs=10,
         GPU=0,
         seed=None,
         lambda_reg=0.1,
+        omega=0.1,
+        epsilon=1,
+        omega_scheduler=None,
+        omega_decay=0.96,
         debug=False,
         save_path=None,
         **kwargs,
@@ -117,9 +121,30 @@ class MIGA(Model):
         self.lambda_reg = lambda_reg
         self.debug = debug
         self.save_path = save_path
-        if self.loss == "ranking":
-            assert lambda_reg is not None, "lambda must be provided for ranking loss"
-            self.lambda_reg = lambda_reg    
+        
+        if  self.loss == "miga":
+            self.omega = omega
+            self.epsilon = epsilon
+            self.omega_scheduler = omega_scheduler
+            self.omega_decay = omega_decay
+            self.Miga_loss = MIGALoss(omega=self.omega, epsilon=self.epsilon)
+            # 定义omega_scheduler
+            if self.omega_scheduler == "exp":
+                def omega_scheduler(epoch):
+                    # 指数衰减
+                    # 但超过一定 epoch 数不再变化
+                    if epoch < 10:
+                        return self.omega * (self.omega_decay ** epoch)
+                    else:
+                        return self.omega * (self.omega_decay ** 10)     
+            elif self.omega_scheduler == "step":
+                def omega_scheduler(epoch):
+                    return self.omega if epoch < self.omega_step_epoch else self.omega_after
+            else:
+                omega_scheduler = None
+        else:
+            raise ValueError("unknown loss `%s`" % self.loss)    
+            
         self.logger.info(
             "MIGA parameters setting:"
             "\nd_feat : {}"
@@ -173,6 +198,7 @@ class MIGA(Model):
             np.random.seed(self.seed)
             torch.manual_seed(self.seed)
         
+        # 路由器设置
         router = Router(
             input_dim=self.d_feat,
             hidden_dim=self.hidden_size,
@@ -180,6 +206,15 @@ class MIGA(Model):
             num_experts_per_group=self.num_experts_per_group,
             model='gru'
         )
+
+        # price_news_router = PriceNewsRouter(
+        #     price_dim=self.d_feat,
+        #     news_dim=1024,
+        #     d_model=self.hidden_size,
+        #     n_heads=self.num_heads,
+        #     d_gru=self.hidden_size,
+        #     dropout=self.dropout
+        # )
 
         self.MIGA_model = MIGAModel(
             input_dim=self.d_feat,
@@ -212,20 +247,9 @@ class MIGA(Model):
         loss = weight * (pred - label) ** 2
         return torch.mean(loss)
 
-    def loss_fn(self, pred, label, weight=None):
+    def loss_fn(self, pred, label, hidden,weight=None):
         mask = ~torch.isnan(label)
-
-        if weight is None:
-            weight = torch.ones_like(label)
-
-        if self.loss == "mse":
-            return self.mse(pred[mask], label[mask], weight[mask])
-        elif self.loss == "ranking":
-            return ranking_loss(pred[mask], label[mask], self.lambda_reg)
-        elif self.loss == "ic":
-            return ic_loss(pred[mask], label[mask])
-
-        raise ValueError("unknown loss `%s`" % self.loss)
+        return self.Miga_loss(pred[mask], label[mask], hidden)
 
     def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label)
@@ -259,44 +283,53 @@ class MIGA(Model):
         epoch_grad_norms_layer = []
         mse_loss_list = []
         pairwise_loss_list = []
+        expert_loss_list = []
+        router_loss_list = []
 
             
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device).float()
-            
-            
-            pred = self.MIGA_model(feature.float())
-            loss = self.loss_fn(pred, label, weight.to(self.device))
-            self.train_optimizer.zero_grad()
 
+            output = self.MIGA_model(feature.float())
+            pred = output['predictions']
+            hidden_representations = output['hidden_representations']
+            
+            loss_dict = self.loss_fn(pred, label, hidden_representations, weight)
+            self.train_optimizer.zero_grad()
+            loss = loss_dict['total_loss']
             loss.backward()
+            
             torch.nn.utils.clip_grad_value_(self.MIGA_model.parameters(), 3.0)
             self.train_optimizer.step()
 
             if self.debug:
                 # 计算MSE 和 pairwise loss 相对大小
                 with torch.no_grad():
+                    expert_loss = loss_dict['expert_loss'].item()
+                    router_loss = loss_dict['router_loss'].item()
                     mse_loss = mse(pred, label).item()
                     pr_loss = pairwise_loss(pred, label).item()
                     mse_loss_list.append(mse_loss)
                     pairwise_loss_list.append(pr_loss)
+                    expert_loss_list.append(expert_loss)
+                    router_loss_list.append(router_loss)
                 # 计算梯度范数
                 grad_norm = compute_grad_norm(self.MIGA_model)
                 grad_norm_layer = compute_layerwise_grad_norm(self.MIGA_model)
                 epoch_grad_norms.append(grad_norm)
                 epoch_grad_norms_layer.append(grad_norm_layer)
 
-            tot_loss_list.append(loss.item())
+            tot_loss_list.append(loss_dict['total_loss'].item())
 
         result["train"] = np.mean(tot_loss_list)
 
         if self.debug:
-            print(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
-            print(f"{Fore.RED} Grad Norm: {np.mean(epoch_grad_norms):.6f}, Grad Norm Layer: {np.mean(epoch_grad_norms_layer):.6f}{Style.RESET_ALL}")
+            self.logger.debug(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
+            self.logger.debug(f"{Fore.RED} Expert Loss: {np.mean(expert_loss_list):.6f}, Router Loss: {np.mean(router_loss_list):.6f}{Style.RESET_ALL}")
             avg_grad_norm = np.mean(epoch_grad_norms)
-            print(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
+            self.logger.debug(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
             # 计算每层的平均梯度范数
             if epoch_grad_norms_layer:
                 layer_names = epoch_grad_norms_layer[0].keys()
@@ -308,7 +341,7 @@ class MIGA(Model):
                         else:
                             layer_norms.append(batch_layer[layer_name])
                     avg_layer_norm = np.mean(layer_norms)
-                    print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
+                    self.logger.debug(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
 
         return result
     
@@ -330,10 +363,16 @@ class MIGA(Model):
             label = data[:, -1, -1].to(self.device).float()
             
             with torch.no_grad():
-                pred = self.MIGA_model(feature.float())
-                loss = self.metric_fn(pred, label, name = 'loss')
-                score = self.metric_fn(pred, label, name = 'loss')
+                output = self.MIGA_model(feature.float())
+                pred = output['predictions']
+                hidden_representations = output['hidden_representations']
+                loss_dict = self.loss_fn(pred, label, hidden_representations)
+                loss = loss_dict['total_loss'].item()
+                expert_loss = loss_dict['expert_loss'].item()
+                router_loss = loss_dict['router_loss'].item()
+                # score = self.metric_fn(pred, label, name = 'loss') # 暂时没想好是否应该用这个做 score
                 ic_score = self.metric_fn(pred, label, "ic")
+                score = ic_score 
                 rankic_score = self.metric_fn(pred, label, "rankic")
                 topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
                 topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
@@ -801,6 +840,70 @@ class CrossAttentionAggregator(nn.Module):
         return final  # 每只股票一个向量
 
 
+class PriceNewsCrossAttn(nn.Module):
+    def __init__(self, d_price, d_news, d_model, n_heads, d_gru, dropout=0.1):
+        super().__init__()
+        self.price_proj = nn.Linear(d_price, d_model) 
+        self.news_proj = nn.Linear(d_news, d_model) 
+        self.cross_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout, batch_first=True)
+
+        self.resid_dropout = nn.Dropout(dropout)
+        self.ln = nn.LayerNorm(d_model)
+        self.gru = nn.GRU(input_size=d_model, hidden_size=d_gru, batch_first=True)
+
+    def forward(self, price, news):
+        """
+        price: [N, T, D_p]
+        news:  [N, T, D_n]
+        return: [N, T, d_model]
+        """
+        # 1. 投影
+        price_proj = self.price_proj(price)  # [N, T, d_model]
+        news_proj = self.news_proj(news)    # [N, T, d_model]
+
+        # 2. Cross-Attention: q=price, k/v=news
+        # nn.MultiheadAttention expects input as [batch, seq_len, embed_dim]
+        attn_out, _ = self.cross_attn(query=price_proj, key=news_proj, value=news_proj)
+
+        # 3. Residual + Dropout
+        fused = self.ln(price_proj + self.resid_dropout(attn_out))  # [N, T, d_model]
+
+        # 4. GRU
+        out, _ = self.gru(fused)  # [N, T, d_model]
+
+        return out[:, -1, :]
+
+
+class PriceNewsRouter(nn.Module):
+    """
+    
+    """
+    def __init__(
+        self,
+        price_dim:int=158,
+        news_dim:int=1024,
+        d_model:int=128,
+        n_heads:int=4,
+        d_gru:int=64,
+        dropout:float=0.0,
+    ):
+        super().__init__()
+        self.price_dim = price_dim
+        self.news_dim = news_dim
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.price_cross_attn = PriceNewsCrossAttn(price_dim, news_dim, d_model, n_heads, d_gru, dropout)
+
+    def forward(self, price, news):
+        """
+        price: [N, T, D_p]
+        news:  [N, T, D_n]
+        return: [N, T, d_model]
+        """
+        return self.price_cross_attn(price, news)
+        
+        
+
 class Router(nn.Module):
     """
     Router for cross-sectional encoding and generating routing weights.
@@ -933,3 +1036,4 @@ class InnerGroupAttention(nn.Module):
         output = self.w_o(attended_values)
         
         return output
+
