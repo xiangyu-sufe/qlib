@@ -306,7 +306,6 @@ class GRU(Model):
                 pred = self.GRU_model(feature.float())
                 # 计算RankNet交叉熵损失（仅用于观察）
                 loss = self.loss_fn(pred, label, )
-                losses.append(loss.item())
                 score = self.metric_fn(pred, label, name = 'loss')
                 # 计算 IC
                 ic_score = self.metric_fn(pred, label, "ic")
@@ -314,6 +313,7 @@ class GRU(Model):
                 topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
                 topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
                 # append scores
+                losses.append(loss.item())
                 scores.append(score.item())
                 ic_scores.append(ic_score.item())
                 rankic_scores.append(rankic_score.item())
