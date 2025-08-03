@@ -25,7 +25,7 @@ def _get_score_ic(pred_label: pd.DataFrame):
     return pd.DataFrame({"ic": _ic, "rank_ic": _rank_ic})
 
 
-def _get_multi_head_score_ic(pred_label: pd.DataFrame, n_layer: int = 5):
+def _get_top_score_ic(pred_label: pd.DataFrame, n_layer: int = 5):
     """
     计算多头 IC，根据指定的层数计算不同百分位的 IC 和 RankIC
     
@@ -77,7 +77,7 @@ def _get_multi_head_score_ic(pred_label: pd.DataFrame, n_layer: int = 5):
     return result
 
 
-def multi_head_score_ic_graph(pred_label: pd.DataFrame, n_layer: int = 5, show_notebook: bool = True, **kwargs) -> [list, tuple]:
+def top_score_ic_graph(pred_label: pd.DataFrame, n_layer: int = 5, show_notebook: bool = True, **kwargs) -> [list, tuple]:
     """
     多头 Score IC 图表
     
@@ -97,7 +97,7 @@ def multi_head_score_ic_graph(pred_label: pd.DataFrame, n_layer: int = 5, show_n
     list or tuple
         如果 show_notebook 为 True，在 notebook 中显示；否则返回 plotly.graph_objs.Figure 列表
     """
-    _ic_df = _get_multi_head_score_ic(pred_label, n_layer)
+    _ic_df = _get_top_score_ic(pred_label, n_layer)
     
     # 计算 IC 和 RankIC 的均值
     ic_mean = _ic_df.iloc[:, 0].mean()  # 第一列是 IC
@@ -106,9 +106,10 @@ def multi_head_score_ic_graph(pred_label: pd.DataFrame, n_layer: int = 5, show_n
     # 格式化标题，包含均值信息
     percentile = 100 / n_layer
     title = (
-        f"Multi-Head Score IC (Top {percentile:.0f}% IC Mean: {ic_mean:.4f}, "
+        f"Top Score IC (Top {percentile:.0f}% IC Mean: {ic_mean:.4f}, "
         f"Top {percentile:.0f}% RankIC Mean: {rank_ic_mean:.4f})"
     )
+    print(title)
 
     _figure = ScatterGraph(
         _ic_df,
