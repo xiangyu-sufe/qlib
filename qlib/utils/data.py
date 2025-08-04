@@ -12,7 +12,7 @@ import pandas as pd
 from qlib.data.data import DatasetProvider
 
 
-def robust_zscore(x: pd.Series, zscore=False):
+def robust_zscore(x: pd.Series, zscore=False, clip_value=3):
     """Robust ZScore Normalization
 
     Use robust statistics for Z-Score normalization:
@@ -24,7 +24,7 @@ def robust_zscore(x: pd.Series, zscore=False):
     """
     x = x - x.median()
     mad = x.abs().median()
-    x = np.clip(x / mad / 1.4826, -3, 3)
+    x = np.clip(x / mad / 1.4826, -clip_value, clip_value)
     if zscore:
         x -= x.mean()
         x /= x.std()

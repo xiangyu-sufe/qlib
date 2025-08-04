@@ -71,7 +71,8 @@ if __name__ == "__main__":
     infer_processors = [
         {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
         # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
-        {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
+        {"class": "CSZScoreNorm", "kwargs": {"fields_group": "feature", "method": "robust"}},
+        # {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
     
