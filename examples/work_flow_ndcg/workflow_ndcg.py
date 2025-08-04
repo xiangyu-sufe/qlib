@@ -34,7 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
+    parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
