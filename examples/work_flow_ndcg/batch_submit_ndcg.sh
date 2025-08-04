@@ -33,7 +33,7 @@ for ((i=0; i<MAX_JOBS && i<${#weights[@]}; i++)); do
     mkdir -p "$SAVE_PATH"
     echo "提交任务: lr=$LR, weight=$weight, save_path=$SAVE_PATH"
     bsub -J ndcg_w${weight} -q gpu -n 1 -m "gpu01 gpu02 gpu03 gpu04 gpu05 gpu06" -gpu "num=1" -o "${SAVE_PATH}/stdout.log" -e "${SAVE_PATH}/stderr.log" \
-        python workflow_ndcg.py --lr "$LR" --weight "$weight" --save_path "$SAVE_PATH"
+        python workflow_ic_ndcg.py --lr "$LR" --weight "$weight" --save_path "$SAVE_PATH"
     unset weights[i]
     sleep 1
 done
