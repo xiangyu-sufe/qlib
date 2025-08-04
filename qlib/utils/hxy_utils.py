@@ -230,7 +230,7 @@ def apply_mask_preserve_norm(grad, mask, method = 'minmax',eps=1e-12):
         
     return scaled_grad
 
-def prepare_task_pool(onlyrun_task_id,
+def prepare_task_pool(onlyrun_task_id: List[int],
                  task_config,
                  path,
                  start_time, end_time):
