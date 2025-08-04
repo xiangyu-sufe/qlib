@@ -64,9 +64,9 @@ def single_dcg_vectorized(real_scores, positions, k, linear=False):
         valid_positions = positions[valid_mask]
         valid_scores = real_scores[valid_mask]
         if linear:
-            dcg_values[valid_mask] = valid_scores / torch.log2(valid_positions.float() + 2)
+            dcg_values[valid_mask] = valid_scores.float() / torch.log2(valid_positions.float() + 2)
         else:
-            dcg_values[valid_mask] = (2 ** valid_scores - 1) / torch.log2(valid_positions.float() + 2)
+            dcg_values[valid_mask] = (2 ** valid_scores.float() - 1) / torch.log2(valid_positions.float() + 2)
     
     return dcg_values
 
