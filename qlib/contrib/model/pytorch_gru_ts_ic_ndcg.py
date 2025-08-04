@@ -253,6 +253,7 @@ class GRUNDCG(Model):
             if self.loss == "ic":
                 # 路线 2
                 with torch.no_grad():
+                    # 计算每个样本的ndcg变化
                     lambda_grads = compute_delta_ndcg(pred.detach(), label.detach(), self.n_layer, sigma=self.sigma, linear=self.linear_ndcg)
                     lambda_grads = lambda_grads / lambda_grads.sum()
                 loss = self.loss_fn(pred, label)

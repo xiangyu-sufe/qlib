@@ -228,7 +228,7 @@ def compute_delta_ndcg(y_pred, y_true, n_layer, sigma=3.03, linear=True):
     # 标准化真实分数
     y_min, y_max = y_true.min(), y_true.max()
     if y_max > y_min:
-        real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer - 1)
+        real_scores = (y_true - y_min) / (y_max - y_min) * n_layer 
     else:
         real_scores = torch.zeros_like(y_true)
     
