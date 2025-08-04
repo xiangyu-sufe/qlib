@@ -116,7 +116,7 @@ if __name__ == "__main__":
         task = {
             "model": {
                 "class": "GRUNDCG",
-                "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts_ic_ndcg",
                 "kwargs": {
                     "d_feat": 158,
                     "hidden_size": 64,
@@ -127,7 +127,7 @@ if __name__ == "__main__":
                     "lr": args.lr,
                     "early_stop": 10,
                     "metric": "ndcg",
-                    "loss": "cross_entropy",
+                    "loss": "ic",
                     "n_jobs": 24,
                     "GPU": 0,
                     "seed": args.onlyrun_seed_id,
