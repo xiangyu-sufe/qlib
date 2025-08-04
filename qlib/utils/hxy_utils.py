@@ -186,7 +186,40 @@ def gen_task(task_config: Dict[str, int],
       
     return task_pool
 
-
+def apply_mask_preserve_norm(grad, mask, method = 'minmax',eps=1e-12):
+    # 原始范数
+    assert method in ['minmax', 'l2', 'l1'], "method must be 'minmax' or 'l2'"
+    if method == 'l2':
+        norm_orig = grad.norm(p=2)
+        
+        # masked 后
+        masked_grad = grad * mask
+        norm_masked = masked_grad.norm(p=2) + eps  # 加 epsilon 防止除零
+        
+        # 缩放 masked gradient，使范数与原始一样
+        scaled_grad = masked_grad * (norm_orig / norm_masked)
+    elif method == 'l1':
+        norm_orig = grad.norm(p=1)
+        
+        # masked 后
+        masked_grad = grad * mask
+        norm_masked = masked_grad.norm(p=1) + eps
+    elif method == 'minmax':
+        # 计算原始梯度的最大值和最小值
+        min_val = grad.min()
+        max_val = grad.max()
+        
+        # masked 后
+        masked_grad = grad * mask
+        
+        # 计算 masked 梯度的最大值和最小值
+        masked_min_val = masked_grad.min()
+        masked_max_val = masked_grad.max()
+        
+        # 缩放 masked gradient，使其在原始梯度的范围内
+        scaled_grad = (masked_grad - masked_min_val) / (masked_max_val - masked_min_val + eps) * (max_val - min_val) + min_val
+        
+    return scaled_grad
 
 def prepare_task_pool(onlyrun_task_id,
                  task_config,
@@ -196,7 +229,7 @@ def prepare_task_pool(onlyrun_task_id,
     只返回每个task的配置信息，不实际加载数据
     """
     daily_date = load_calendar(path, 'day')
-    task_pool = gen_task(task_config, daily_date, start_time, end_time)
+    task_pool = gen_task(task_config, daily_date, start_time, end_time, None)
     only_run_task_pool = {}
     for task_id, (task, segments) in enumerate(task_pool.items()):
         if onlyrun_task_id is not None and task_id not in onlyrun_task_id:

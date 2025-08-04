@@ -9,18 +9,12 @@ The interface of (1) is `qrun XXX.yaml`.  The interface of (2) is script like th
 """
 import qlib
 from qlib.constant import REG_CN
-from qlib.contrib.report import analysis_model, analysis_position
-from qlib.utils import init_instance_by_config, flatten_dict
+from qlib.contrib.report import analysis_position
+from qlib.utils import init_instance_by_config
 from qlib.utils.hxy_utils import get_label, prepare_task_pool
-from qlib.workflow import R
-from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
-from qlib.tests.data import GetData
-from qlib.tests.config import CSI300_BENCH, CSI300_GBDT_TASK
-from qlib.data.dataset.handler import DataHandlerLP
-from torch.utils.data import Sampler, TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader
 import torch
 import pandas as pd
-import numpy as np
 import os
 
 if __name__ == "__main__":
@@ -33,9 +27,10 @@ if __name__ == "__main__":
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
+    parser.add_argument("--gpu", type=int, default=0,)
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
-    parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
+    parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
+    parser.add_argument("--valid_length", type=int, default=360, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
     # 时间范围参数
@@ -45,6 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
+    parser.add_argument("--combine_type", type=str, default="null", ) # 需要设置
     args = parser.parse_args()
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
@@ -108,32 +104,31 @@ if __name__ == "__main__":
             "instruments": market,
             "infer_processors":infer_processors,
             "learn_processors":learn_processors,
-            # "infer_processors":[],
-            # "learn_processors":[],
             "drop_raw": True,
         }   
 
         task = {
             "model": {
                 "class": "GRUNDCG",
-                "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts_ic_ndcg",
                 "kwargs": {
                     "d_feat": 158,
                     "hidden_size": 64,
                     "num_layers": 2,
                     "dropout": 0.0,
-                    "n_epochs": 100,
-                    "batch_size": 1,
+                    "n_epochs": 50,
+                    "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,
                     "metric": "ndcg",
-                    "loss": "cross_entropy",
+                    "loss": "ic",
                     "n_jobs": 24,
-                    "GPU": 0,
+                    "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,
                     "sigma": args.sigma,
-                    "n_layer": 5,
-                    "linear_ndcg": True,
+                    "n_layer": 1,
+                    "linear_ndcg": False,
+                    "combine_type":args.combine_type,
                     "debug": True,  # Set to True for debugging mode
                     "save_path": f"{save_path}/task_{task_id}"
                 },
@@ -187,7 +182,7 @@ if __name__ == "__main__":
             label = get_label(dataset, segment="test")
             label.columns = ["label"]
             
-            pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
+            pred_label = pd.concat([label, score], axis=1, sort=True).reindex(score.index)
             
             # 确保保存目录存在
             import os
@@ -199,19 +194,19 @@ if __name__ == "__main__":
                 # 方法1: 尝试保存为PNG
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
-                    print(f"✅ 成功保存 score_ic_graph.png")
+                    print("✅ 成功保存 score_ic_graph.png")
                 except Exception as png_error:
                     print(f"⚠️ PNG保存失败: {png_error}")
                     # 方法2: 保存为HTML文件
                     try:
                         fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
-                        print(f"✅ 成功保存 score_ic_graph.html (可在浏览器中查看)")
+                        print("✅ 成功保存 score_ic_graph.html (可在浏览器中查看)")
                     except Exception as html_error:
                         print(f"⚠️ HTML保存失败: {html_error}")
                         # 方法3: 保存为JSON文件
                         try:
                             fig.write_json(f"{save_path}/task_{task_id}/score_ic_graph.json")
-                            print(f"✅ 成功保存 score_ic_graph.json (plotly格式)")
+                            print("✅ 成功保存 score_ic_graph.json (plotly格式)")
                         except Exception as json_error:
                             print(f"❌ 所有保存方法都失败: {json_error}")
             except Exception as e:
@@ -222,19 +217,19 @@ if __name__ == "__main__":
                 # 方法1: 尝试保存为PNG
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/top_score_ic_graph.png")
-                    print(f"✅ 成功保存 top_score_ic_graph.png")
+                    print("✅ 成功保存 top_score_ic_graph.png")
                 except Exception as png_error:
                     print(f"⚠️ PNG保存失败: {png_error}")
                     # 方法2: 保存为HTML文件
                     try:
                         fig.write_html(f"{save_path}/task_{task_id}/top_score_ic_graph.html")
-                        print(f"✅ 成功保存 top_score_ic_graph.html (可在浏览器中查看)")
+                        print("✅ 成功保存 top_score_ic_graph.html (可在浏览器中查看)")
                     except Exception as html_error:
                         print(f"⚠️ HTML保存失败: {html_error}")
                         # 方法3: 保存为JSON文件
                         try:
                             fig.write_json(f"{save_path}/task_{task_id}/top_score_ic_graph.json")
-                            print(f"✅ 成功保存 top_score_ic_graph.json (plotly格式)")
+                            print("✅ 成功保存 top_score_ic_graph.json (plotly格式)")
                         except Exception as json_error:
                             print(f"❌ 所有保存方法都失败: {json_error}")
             except Exception as e:

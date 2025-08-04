@@ -1,39 +1,40 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-
+# add daily batch sampler
+# add NDCG loss function
 
 from __future__ import division
 from __future__ import print_function
-from collections import defaultdict
-import warnings
 
+from collections import defaultdict
+import os 
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
 import copy
 from ...utils import get_or_create_path
 from ...log import get_module_logger
-
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.data.sampler import Sampler
+from torch.utils.data import Sampler
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
 from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
-from ..loss.loss import (ic_loss, rankic_loss,
-                         topk_ic_loss, topk_rankic_loss,
-                           ranking_loss, pairwise_loss, mse)
-from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
-
+from ..loss.ndcg import (compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss,
+                         compute_delta_ndcg)
+from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss
+from qlib.utils.color import *
+from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm, apply_mask_preserve_norm
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
-import os
 
+init(autoreset=True)
 class DailyBatchSampler(Sampler):
     def __init__(self, data_source):
         self.data_source = data_source
@@ -52,7 +53,7 @@ class DailyBatchSampler(Sampler):
         return len(self.data_source)
 
 
-class GRU(Model):
+class GRUNDCG(Model):
     """GRU Model
 
     Parameters
@@ -83,9 +84,12 @@ class GRU(Model):
         n_jobs=10,
         GPU=0,
         seed=None,
-        lambda_reg=0.1,
+        sigma=1.0,
+        n_layer=10,
+        linear_ndcg=False,
         debug=False,
         save_path=None,
+        combine_type='mult',
         **kwargs,
     ):
         # Set logger.
@@ -104,15 +108,18 @@ class GRU(Model):
         self.early_stop = early_stop
         self.optimizer = optimizer.lower()
         self.loss = loss
+        assert self.loss == "ic", "loss must be ic"
         self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
         self.n_jobs = n_jobs
         self.seed = seed
+        self.sigma = sigma
+        self.n_layer = n_layer  
+        self.linear_ndcg = linear_ndcg
         self.debug = debug
         self.save_path = save_path
-        if self.loss == "ranking":
-            assert lambda_reg is not None, "lambda must be provided for ranking loss"
-            self.lambda_reg = lambda_reg        
-
+        self.combine_type = combine_type
+        self.logger.info(Fore.RED + "use GPU: %s" % str(self.device) + Style.RESET_ALL)
+        self.logger.info(Fore.RED + ("Debug Mode" if self.debug else "RUN Mode") + Style.RESET_ALL)
         self.logger.info(
             "GRU parameters setting:"
             "\nd_feat : {}"
@@ -130,8 +137,10 @@ class GRU(Model):
             "\nn_jobs : {}"
             "\nuse_GPU : {}"
             "\nseed : {}"
-            "\ndebug : {}"
-            "\nlambda_reg : {}"
+            "\nsigma : {}"
+            "\nn_layer : {}"
+            "\nlinear_ndcg : {}"
+            "\ncombine_type : {}"
             "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
@@ -148,9 +157,11 @@ class GRU(Model):
                 n_jobs,
                 self.use_gpu,
                 seed,
-                debug,
+                sigma,
+                n_layer,
+                linear_ndcg,
+                combine_type,
                 save_path,
-                lambda_reg,
             )
         )
 
@@ -193,15 +204,14 @@ class GRU(Model):
 
         if self.loss == "mse":
             return self.mse(pred[mask], label[mask], weight[mask])
-        elif self.loss == "ranking":
-            return ranking_loss(pred[mask], label[mask], self.lambda_reg)
         elif self.loss == "ic":
             return ic_loss(pred[mask], label[mask])
-
+        elif self.loss == 'rankic':
+            return rankic_loss(pred[mask], label[mask])
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label, name, topk=None):
-        mask = torch.isfinite(label)
+        mask = torch.isfinite(label) 
 
         if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
             if name == "ic":
@@ -226,54 +236,81 @@ class GRU(Model):
     def train_epoch(self, data_loader):
         self.GRU_model.train()
         # Debug模式下记录每个batch的梯度信息
-        tot_loss_list = []
         result = defaultdict(lambda : np.nan)
-
         if self.debug:
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
-            mse_loss_list = []
-            pairwise_loss_list = []
-            
 
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
-            label = data[:, -1, -1].to(self.device).float()
-
+            label = data[:, -1, -1].to(self.device)
             pred = self.GRU_model(feature.float())
-            loss = self.loss_fn(pred, label, weight.to(self.device))
-
+            # 这里使用NDCG @k来计算损失
+            pred.requires_grad_(True)
+            # 清零梯度
             self.train_optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_value_(self.GRU_model.parameters(), 3.0)
-            self.train_optimizer.step()
-            # 计算损失
-            tot_loss_list.append(loss.item())
-
-            if self.debug:
-                # 计算MSE 和 pairwise loss 相对大小
+            if self.loss == "ic":
+                # 路线 2
                 with torch.no_grad():
-                    mse_loss = mse(pred, label).item()
-                    pr_loss = pairwise_loss(pred, label).item()
-                    mse_loss_list.append(mse_loss)
-                    pairwise_loss_list.append(pr_loss)
-                # 计算梯度范数
+                    # 计算每个样本的ndcg变化
+                    lambda_grads = compute_delta_ndcg(pred.detach(), label.detach(), self.n_layer, sigma=self.sigma, linear=self.linear_ndcg)
+                    lambda_grads = lambda_grads / lambda_grads.sum()
+                loss = self.loss_fn(pred, label)
+                grad = torch.autograd.grad(loss, pred, create_graph=False)[0]
+                if self.combine_type == 'mult': # 相乘形式
+                    # lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'minmax')
+                    lambda_grads = lambda_grads * grad * 1000
+                elif self.combine_type == 'null':
+                    lambda_grads = grad
+                elif self.combine_type == 'add': # 相加形式
+                    # 计算 lambda 梯度
+                    lambda_grads = compute_lambda_gradients(label, pred.detach(), self.n_layer, self.sigma, self.linear_ndcg)
+                    # 检查梯度是否有效
+                    check_grad = torch.sum(lambda_grads).item()
+                    if check_grad == float('inf') or np.isnan(check_grad):
+                        print("Warning: Invalid lambda gradients detected")
+                        print("lambda_grads_sum:", check_grad)
+                        lambda_grads = torch.zeros_like(lambda_grads)
+                    lambda_grads = lambda_grads / lambda_grads.sum()
+                else:
+                    raise ValueError(f"Unknown combine_type: {self.combine_type}")
+            else:
+                raise ValueError(f"Unknown loss: {self.loss}")
+            pred.backward(lambda_grads)                
+            torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
+            # 手动更新梯度
+            with torch.no_grad():
+                lr = self.train_optimizer.param_groups[0]['lr']
+                for p in self.GRU_model.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
+            # 优化器更新梯度
+            # self.train_optimizer.step()
+            # 更新完后记录下梯度
+            if self.debug:
                 grad_norm = compute_grad_norm(self.GRU_model)
                 grad_norm_layer = compute_layerwise_grad_norm(self.GRU_model)
                 epoch_grad_norms.append(grad_norm)
                 epoch_grad_norms_layer.append(grad_norm_layer)
+                # # 打印梯度信息
+                # print(f"Batch Grad Norm: {grad_norm:.6f}")
+                # # 处理每层梯度范数（compute_layerwise_grad_norm返回的是字典，每个键对应一个参数的梯度范数列表）
+                # layer_info_parts = []
+                # for name, norms in grad_norm_layer.items():
+                #     if isinstance(norms, list) and len(norms) > 0:
+                #         avg_norm = np.mean(norms)
+                #         layer_info_parts.append(f"{name}: {avg_norm:.6f}")
+                #     else:
+                #         layer_info_parts.append(f"{name}: {norms:.6f}")
+                # layer_info = ", ".join(layer_info_parts)
+                # print(f"Layer Grad Norms: {layer_info}")
 
-
-        result["train"] = np.mean(tot_loss_list)
-        # Debug模式下记录梯度信息
+                # Debug模式下记录梯度信息
         if self.debug:
             # 打印epoch级别的梯度统计
-            # f"{Fore.GREEN}"
-            print(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
-            print(f"{Fore.RED} Total loss: {np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
             avg_grad_norm = np.mean(epoch_grad_norms)
-            print(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
+            print(f"Epoch Avg Grad Norm: {avg_grad_norm:.6f}")
 
             # 计算每层的平均梯度范数
             if epoch_grad_norms_layer:
@@ -304,21 +341,22 @@ class GRU(Model):
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
-            label = data[:, -1, -1].to(self.device).float()
+            label = data[:, -1, -1].to(self.device)
 
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
                 # 计算RankNet交叉熵损失（仅用于观察）
-                loss = self.loss_fn(pred, label, )
-                score = self.metric_fn(pred, label, name = 'loss')
+                loss = ranknet_cross_entropy_loss(pred, label, sigma=self.sigma)
+                # 计算NDCG
+                score = calculate_ndcg_optimized(label, pred, self.n_layer, self.linear_ndcg)
+                losses.append(loss.item())
                 # 计算 IC
                 ic_score = self.metric_fn(pred, label, "ic")
                 rankic_score = self.metric_fn(pred, label, "rankic")
                 topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
                 topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
                 # append scores
-                losses.append(loss.item())
-                scores.append(score)
+                scores.append(score.item())
                 ic_scores.append(ic_score)
                 rankic_scores.append(rankic_score)
                 topk_ic_scores.append(topk_ic_score)
@@ -333,7 +371,7 @@ class GRU(Model):
         result["topk_rankic"] = np.mean(topk_rankic_scores)
 
         return result
-
+    
     def fit(
         self,
         dataset,
@@ -350,7 +388,6 @@ class GRU(Model):
 
         dl_train.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
         dl_valid.config(fillna_type="ffill+bfill")  # process nan brought by dataloader
-
         # daily batch sampler
         sampler_train = DailyBatchSampler(dl_train)
         sampler_valid = DailyBatchSampler(dl_valid)
@@ -387,7 +424,7 @@ class GRU(Model):
         evals_result["valid"] = []
         evals_result["train_score"] = []
         evals_result["valid_score"] = []
-        best_param = None
+
         # train
         self.logger.info("training...")
         self.fitted = True
@@ -395,12 +432,11 @@ class GRU(Model):
         for step in tqdm(range(self.n_epochs)):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
-            result = self.train_epoch(train_loader)
-            evals_result["train"].append(result["train"])
-            evals_result["train_score"].append(result["score"])
+            result = self.train_epoch(train_loader) 
+            # evals_result["train"].append(result["train"]) 
+            evals_result["train_score"].append(result["score"]) 
             self.logger.info("evaluating...")
             result = self.test_epoch(valid_loader)
-            
             self.logger.info(
                 f"{Fore.GREEN}"
                 f"valid loss: {result['loss']:.6f}, valid score: {result['score']:.6f}\n"
@@ -409,7 +445,7 @@ class GRU(Model):
                 f"{Style.RESET_ALL}"
             )
             val_score = result["score"]
-            evals_result["valid"].append(result["loss"])
+            evals_result["valid"].append(result["rankic"])
             evals_result["valid_score"].append(val_score)
 
             if val_score > best_score:
@@ -424,15 +460,13 @@ class GRU(Model):
                     break
 
         self.logger.info("best score: %.6lf @ %d" % (best_score, best_epoch))
-        if best_param is not None:
-            self.GRU_model.load_state_dict(best_param)
-            torch.save(best_param, save_path)
+        self.GRU_model.load_state_dict(best_param)
+        torch.save(best_param, save_path)
 
         if self.use_gpu:
             torch.cuda.empty_cache()
         # 可视化损失
         self.visualize_evals_result(evals_result)
-
 
     def predict(self, dataset):
         if not self.fitted:
@@ -441,6 +475,7 @@ class GRU(Model):
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
         self.test_index = dl_test.get_index()
+        # 这里不能用dailysampler，否则 index 对不上
         test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
         self.GRU_model.eval()
         preds = []
@@ -455,7 +490,6 @@ class GRU(Model):
             preds.append(pred)
 
         return pd.Series(np.concatenate(preds), index=self.test_index)
-
 
     def visualize_evals_result(self, evals_result,):
         """
@@ -557,7 +591,7 @@ class GRU(Model):
                     title_info += f" (Score: {evals_result['valid_score'][best_epoch]:.4f})"
                 fig.suptitle(title_info, fontsize=14, y=0.95)
             
-            if self.save_path is not None:
+            if self.save_path is not None and self.save_path != "":
                 if not os.path.exists(self.save_path):
                     os.makedirs(self.save_path)
                 plt.savefig(
@@ -566,6 +600,8 @@ class GRU(Model):
                     bbox_inches='tight'
                 )
             plt.close()
+
+
 
 class GRUModel(nn.Module):
     def __init__(self, d_feat=6, hidden_size=64, num_layers=2, dropout=0.0):
@@ -583,5 +619,6 @@ class GRUModel(nn.Module):
         self.d_feat = d_feat
 
     def forward(self, x):
+        x = x.squeeze()  # remove the time dimension
         out, _ = self.rnn(x)
         return self.fc_out(out[:, -1, :]).squeeze()

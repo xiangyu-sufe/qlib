@@ -33,8 +33,9 @@ if __name__ == "__main__":
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
+    parser.add_argument("--gpu", type=int, default=0,)
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
+    parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
@@ -42,7 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
-    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
     args = parser.parse_args()
@@ -108,15 +109,13 @@ if __name__ == "__main__":
             "instruments": market,
             "infer_processors":infer_processors,
             "learn_processors":learn_processors,
-            # "infer_processors":[],
-            # "learn_processors":[],
             "drop_raw": True,
         }   
 
         task = {
             "model": {
-                "class": "GRUNDCG",
-                "module_path": "qlib.contrib.model.pytorch_gru_ts_ndcg",
+                "class": "GRU",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts",
                 "kwargs": {
                     "d_feat": 158,
                     "hidden_size": 64,
@@ -126,14 +125,11 @@ if __name__ == "__main__":
                     "batch_size": 1,
                     "lr": args.lr,
                     "early_stop": 10,
-                    "metric": "ndcg",
-                    "loss": "cross_entropy",
+                    "metric": "ic",
+                    "loss": "ic",
                     "n_jobs": 24,
-                    "GPU": 0,
+                    "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,
-                    "sigma": args.sigma,
-                    "n_layer": 5,
-                    "linear_ndcg": True,
                     "debug": True,  # Set to True for debugging mode
                     "save_path": f"{save_path}/task_{task_id}"
                 },

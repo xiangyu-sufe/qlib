@@ -6,6 +6,22 @@ from torch.optim.optimizer import Optimizer
 import math
 import warnings
 
+def get_pairs_index(n, device):
+    """
+    获取所有样本对的索引, 不需要保证有序
+    """
+     # 创建索引矩阵
+    i_indices = torch.arange(n, device=device).unsqueeze(1).expand(n, n)
+    j_indices = torch.arange(n, device=device).unsqueeze(0).expand(n, n)
+    
+    # 创建上三角矩阵掩码（避免重复对）
+    mask = i_indices < j_indices
+    
+    # 获取有效的索引对
+    i_valid = i_indices[mask]
+    j_valid = j_indices[mask]   
+    
+    return torch.stack([i_valid, j_valid], dim=1)
 
 def get_pairs_parallel(real_scores):
     """
@@ -131,7 +147,7 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03, linear=False):
         real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer - 1)
         real_scores = real_scores.float()
     else:
-        warning.warn("We get the same prediction for all stocks!!!")
+        warnings.warn("We get the same prediction for all stocks!!!")
         real_scores = torch.zeros_like(y_true, dtype=torch.float32)
     
     # 获取预测排名
@@ -192,6 +208,75 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03, linear=False):
     lambda_gradients.scatter_add_(0, j_indices, -lambda_contribution)
     
     return lambda_gradients
+
+def compute_delta_ndcg(y_pred, y_true, n_layer, sigma=3.03, linear=True):
+    """
+    计算每个股票的Delta NDCG
+    Args:
+        y_true (_type_): _description_
+        y_pred (_type_): _description_
+        n_layer (_type_): _description_
+        sigma (float, optional): _description_. Defaults to 3.03.
+    """
+    n = len(y_true)
+    k = n // n_layer
+    device = y_pred.device
+    
+    # 初始化lambda梯度
+    delta_ndcg_ = torch.zeros((n, n), device=device, dtype=torch.float32)
+    
+    # 标准化真实分数
+    y_min, y_max = y_true.min(), y_true.max()
+    if y_max > y_min:
+        real_scores = (y_true - y_min) / (y_max - y_min) * n_layer 
+    else:
+        real_scores = torch.zeros_like(y_true)
+    
+    # 获取预测排名
+    _, pred_indices = torch.sort(y_pred, descending=True)
+    i_rank = torch.empty_like(pred_indices)
+    i_rank[pred_indices] = torch.arange(n, device=device)
+    
+    # 计算IDCG用于归一化
+    idcg = calculate_idcg_optimized(real_scores, k, linear)
+    
+    if idcg <= 0:
+        warnings.warn('idcg <= 0, check your data')
+
+        return torch.ones(n, device=device, dtype=torch.float32)
+    
+    # 获取所有有效对
+    pairs = get_pairs_index(n, device)
+    
+    if len(pairs) == 0:
+        warnings.warn('no pairs, check your data')
+
+        return torch.ones(n, device=device, dtype=torch.float32)
+    
+    # 批量处理所有对
+    i_indices = pairs[:, 0]
+    j_indices = pairs[:, 1]
+    
+    # 获取对应的分数和排名
+    real_i = real_scores[i_indices]
+    real_j = real_scores[j_indices]
+    pred_i = y_pred[i_indices]
+    pred_j = y_pred[j_indices]
+    rank_i = i_rank[i_indices]
+    rank_j = i_rank[j_indices]
+
+    # 计算NDCG增益差异
+    dcg_i_at_i = single_dcg_vectorized(real_i, rank_i, k, linear)
+    dcg_i_at_j = single_dcg_vectorized(real_i, rank_j, k, linear)
+    dcg_j_at_i = single_dcg_vectorized(real_j, rank_i, k, linear)
+    dcg_j_at_j = single_dcg_vectorized(real_j, rank_j, k, linear)
+    delta_ndcg = torch.abs((dcg_i_at_j + dcg_j_at_i) - (dcg_i_at_i + dcg_j_at_j)) / idcg
+    
+    delta_ndcg_[i_indices, j_indices] = delta_ndcg
+    delta_ndcg_[j_indices, i_indices] = delta_ndcg
+    
+    return delta_ndcg_.sum(dim=1)
+
 
 class LambdaNetOptimizer(Optimizer):
     """
