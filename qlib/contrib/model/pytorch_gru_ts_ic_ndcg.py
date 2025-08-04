@@ -355,8 +355,8 @@ class GRUNDCG(Model):
                 # 计算 IC
                 ic_score = self.metric_fn(pred, label, "ic")
                 rankic_score = self.metric_fn(pred, label, "rankic")
-                topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
-                topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
+                topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=self.n_layer)
+                topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=self.n_layer)
                 # append scores
                 scores.append(score.item())
                 ic_scores.append(ic_score)

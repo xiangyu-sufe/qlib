@@ -195,8 +195,9 @@ if __name__ == "__main__":
             
             # 保存图片 - 使用多种方法
             try:
-                fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+                fig, title = analysis_position.score_ic_graph(pred_label, show_notebook=False)
                 # 方法1: 尝试保存为PNG
+                model.logger.info(title)
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
                     print(f"✅ 成功保存 score_ic_graph.png")
@@ -218,8 +219,9 @@ if __name__ == "__main__":
                 print(f"❌ 生成 score_ic_graph 时出错: {e}")
                 
             try:
-                fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
+                fig, title = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
                 # 方法1: 尝试保存为PNG
+                model.logger.info(title)
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/top_score_ic_graph.png")
                     print(f"✅ 成功保存 top_score_ic_graph.png")

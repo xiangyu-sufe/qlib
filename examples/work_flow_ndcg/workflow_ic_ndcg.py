@@ -126,7 +126,7 @@ if __name__ == "__main__":
                     "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,
                     "sigma": args.sigma,
-                    "n_layer": 1,
+                    "n_layer": 5,
                     "linear_ndcg": False,
                     "combine_type":args.combine_type,
                     "debug": True,  # Set to True for debugging mode
