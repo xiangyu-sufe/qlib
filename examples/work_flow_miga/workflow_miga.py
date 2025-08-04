@@ -144,7 +144,7 @@ if __name__ == "__main__":
                     "early_stop": 10,
                     "metric": "ic",
                     "loss": "miga",
-                    "n_jobs": 50,
+                    "n_jobs": 24,
                     "GPU": 0,
                     "lambda_reg": args.lambda_reg, # 损失参数
                     "omega": args.omega,
