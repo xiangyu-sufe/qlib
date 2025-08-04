@@ -125,7 +125,7 @@ if __name__ == "__main__":
         task = {
             "model": {
                 "class": "GRU",
-                "module_path": "qlib.contrib.model.pytorch_gru_ts",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts_random",
                 "kwargs": {
                     "d_feat": 158,
                     "hidden_size": 64,
