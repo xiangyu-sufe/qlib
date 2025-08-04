@@ -27,7 +27,8 @@ from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.loss import (ic_loss, rankic_loss,
                          topk_ic_loss, topk_rankic_loss,
-                           ranking_loss, pairwise_loss, mse)
+                           ranking_loss, pairwise_loss, mse,
+                           quantile_loss, coverage)
 from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
 
 from colorama import Fore, Style, init
@@ -86,6 +87,7 @@ class GRU(Model):
         lambda_reg=0.1,
         debug=False,
         save_path=None,
+        quantile=0.5,
         **kwargs,
     ):
         # Set logger.
@@ -112,6 +114,9 @@ class GRU(Model):
         if self.loss == "ranking":
             assert lambda_reg is not None, "lambda must be provided for ranking loss"
             self.lambda_reg = lambda_reg        
+        if self.loss == "quantile":
+            assert quantile is not None, "quantile must be provided for quantile loss"
+            self.quantile = quantile
 
         self.logger.info(
             "GRU parameters setting:"
@@ -132,6 +137,7 @@ class GRU(Model):
             "\nseed : {}"
             "\ndebug : {}"
             "\nlambda_reg : {}"
+            "\nquantile : {}"
             "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
@@ -151,6 +157,7 @@ class GRU(Model):
                 debug,
                 save_path,
                 lambda_reg,
+                quantile,
             )
         )
 
@@ -197,6 +204,8 @@ class GRU(Model):
             return ranking_loss(pred[mask], label[mask], self.lambda_reg)
         elif self.loss == "ic":
             return ic_loss(pred[mask], label[mask])
+        elif self.loss == "quantile":
+            return quantile_loss(pred[mask], label[mask], self.quantile)
 
         raise ValueError("unknown loss `%s`" % self.loss)
 
@@ -220,6 +229,8 @@ class GRU(Model):
                 return -topk_rankic_loss(pred[mask], label[mask], k=topk).item()
             elif name == "loss":
                 return -self.loss_fn(pred[mask], label[mask]).item()
+            elif name == "coverage":
+                return coverage(pred[mask], label[mask], self.quantile).item()
 
         raise ValueError("unknown metric `%s`" % name)
 
@@ -579,7 +590,7 @@ class GRUModel(nn.Module):
             dropout=dropout,
         )
         self.fc_out = nn.Linear(hidden_size, 1)
-
+        self.ln = nn.LayerNorm(hidden_size)
         self.d_feat = d_feat
 
     def forward(self, x):

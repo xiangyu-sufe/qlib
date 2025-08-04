@@ -2,6 +2,17 @@ import torch
 import torch.nn.functional as F
 
 
+def quantile_loss(pred, label, tau=0.5):
+    loss = torch.max(tau * (label - pred), (tau - 1) * (label - pred))
+
+    return torch.mean(loss)          
+
+def coverage(pred, label, tau):
+    coverage = (label <= pred).float().mean().item()
+    
+    return coverage - tau   
+    
+
 def ranking_loss(pred, label, lambda_reg=0.1):
     """Ranking loss with pointwise regression and pairwise ranking"""
     # Pointwise regression loss
