@@ -35,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_length", type=int, default=240, help="Test dataset length")
 
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
+    parser.add_argument("--start_time", type=str, default="2020-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
