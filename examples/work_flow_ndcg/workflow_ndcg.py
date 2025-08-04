@@ -80,6 +80,15 @@ if __name__ == "__main__":
     learn_processors = [
         {"class": "DropnaLabel"},
     ]
+    filter_pipe = [
+        {
+            "class": "ExpressionDFilter",
+            "kwargs": {
+                "rule": "amount > 1e-5",
+                "filter_level": "day",
+            }
+        }
+]
 
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
@@ -111,6 +120,7 @@ if __name__ == "__main__":
             # "infer_processors":[],
             # "learn_processors":[],
             "drop_raw": True,
+            "filter_pipe": filter_pipe,
         }   
 
         task = {

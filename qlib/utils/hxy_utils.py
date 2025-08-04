@@ -2,6 +2,7 @@ from collections import defaultdict
 import pandas as pd
 import numpy as np
 from typing import Dict, List
+import torch
 
 def compute_grad_norm(model):
     """
@@ -15,6 +16,14 @@ def compute_grad_norm(model):
     total_norm = total_norm ** 0.5
     
     return total_norm
+
+def scale_preserve_sign(x):
+    max_abs = np.max(np.abs(x))
+    return x / max_abs if max_abs != 0 else x
+
+def scale_preserve_sign_torch(x):
+    max_abs = torch.max(torch.abs(x))
+    return x / max_abs if max_abs != 0 else x
 
 def compute_layerwise_grad_norm(model):
     """

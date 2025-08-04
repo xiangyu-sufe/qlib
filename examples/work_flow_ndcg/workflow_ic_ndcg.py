@@ -29,7 +29,7 @@ if __name__ == "__main__":
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
     parser.add_argument("--gpu", type=int, default=0,)
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
+    parser.add_argument("--train_length", type=int, default=2400, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=360, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
@@ -37,10 +37,12 @@ if __name__ == "__main__":
     parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
-    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
     parser.add_argument("--combine_type", type=str, default="null", ) # 需要设置
+    parser.add_argument("--weight", type=float, default=0.7, )
+    parser.add_argument("--step_len", type=int, default=10, )
     args = parser.parse_args()
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
@@ -72,11 +74,21 @@ if __name__ == "__main__":
         {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
         {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
     ]
+    
     # 排序学习 label 不用处理
     learn_processors = [
         {"class": "DropnaLabel"},
     ]
 
+    filter_pipe = [
+        {
+            "filter_type": "ExpressionDFilter",
+            "rule_expression": "$volume > 1e-5",
+            "filter_start_time": None,
+            "filter_end_time": None,
+            "keep": False
+        }
+    ]
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
         print(f"开始处理任务 {task_id}")
@@ -105,6 +117,7 @@ if __name__ == "__main__":
             "infer_processors":infer_processors,
             "learn_processors":learn_processors,
             "drop_raw": True,
+            "filter_pipe": filter_pipe,
         }   
 
         task = {
@@ -127,6 +140,7 @@ if __name__ == "__main__":
                     "seed": args.onlyrun_seed_id,
                     "sigma": args.sigma,
                     "n_layer": 5,
+                    "weight": args.weight,
                     "linear_ndcg": False,
                     "combine_type":args.combine_type,
                     "debug": True,  # Set to True for debugging mode
@@ -147,6 +161,7 @@ if __name__ == "__main__":
                         "valid": (val_start_time, val_end_time),
                         "test": (test_start_time, test_end_time),
                     },
+                    "step_len": args.step_len,
                 },
             },
         }

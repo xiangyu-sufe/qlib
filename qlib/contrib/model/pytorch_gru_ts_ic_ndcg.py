@@ -30,7 +30,7 @@ from ..loss.ndcg import (compute_lambda_gradients, calculate_ndcg_optimized, ran
                          compute_delta_ndcg)
 from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss
 from qlib.utils.color import *
-from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm, apply_mask_preserve_norm
+from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm, apply_mask_preserve_norm, scale_preserve_sign_torch
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
 
@@ -89,6 +89,7 @@ class GRUNDCG(Model):
         linear_ndcg=False,
         debug=False,
         save_path=None,
+        weight=0.7,
         combine_type='mult',
         **kwargs,
     ):
@@ -118,6 +119,7 @@ class GRUNDCG(Model):
         self.debug = debug
         self.save_path = save_path
         self.combine_type = combine_type
+        self.weight = weight
         self.logger.info(Fore.RED + "use GPU: %s" % str(self.device) + Style.RESET_ALL)
         self.logger.info(Fore.RED + ("Debug Mode" if self.debug else "RUN Mode") + Style.RESET_ALL)
         self.logger.info(
@@ -141,6 +143,7 @@ class GRUNDCG(Model):
             "\nn_layer : {}"
             "\nlinear_ndcg : {}"
             "\ncombine_type : {}"
+            "\nweight : {}"
             "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
@@ -161,6 +164,7 @@ class GRUNDCG(Model):
                 n_layer,
                 linear_ndcg,
                 combine_type,
+                weight,
                 save_path,
             )
         )
@@ -272,9 +276,10 @@ class GRUNDCG(Model):
                         print("Warning: Invalid lambda gradients detected")
                         print("lambda_grads_sum:", check_grad)
                         lambda_grads = torch.zeros_like(lambda_grads)
-                    lambda_grads = lambda_grads / lambda_grads.sum()
                     # 加上ic 的梯度
-                    lambda_grads = lambda_grads + grad # 系数为？？？？？？？？？
+                    lambda_grads = scale_preserve_sign_torch(lambda_grads)
+                    grad = scale_preserve_sign_torch(grad)
+                    lambda_grads = (1-self.weight) * lambda_grads + grad * self.weight
                 else:
                     raise ValueError(f"Unknown combine_type: {self.combine_type}")
             else:

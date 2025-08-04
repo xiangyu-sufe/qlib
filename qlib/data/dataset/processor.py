@@ -293,13 +293,14 @@ class RobustZScoreNorm(Processor):
         https://en.wikipedia.org/wiki/Median_absolute_deviation.
     """
 
-    def __init__(self, fit_start_time, fit_end_time, fields_group=None, clip_outlier=True):
+    def __init__(self, fit_start_time, fit_end_time, fields_group=None, clip_outlier=True, clip_value=3):
         # NOTE: correctly set the `fit_start_time` and `fit_end_time` is very important !!!
         # `fit_end_time` **must not** include any information from the test data!!!
         self.fit_start_time = fit_start_time
         self.fit_end_time = fit_end_time
         self.fields_group = fields_group
         self.clip_outlier = clip_outlier
+        self.clip_value = clip_value
 
     def fit(self, df: pd.DataFrame = None):
         df = fetch_df_by_index(df, slice(self.fit_start_time, self.fit_end_time), level="datetime")
@@ -315,7 +316,7 @@ class RobustZScoreNorm(Processor):
         X -= self.mean_train
         X /= self.std_train
         if self.clip_outlier:
-            X = np.clip(X, -3, 3)
+            X = np.clip(X, -self.clip_value, self.clip_value)
         df[self.cols] = X
         return df
 
