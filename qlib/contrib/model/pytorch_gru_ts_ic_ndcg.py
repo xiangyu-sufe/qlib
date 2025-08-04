@@ -211,7 +211,7 @@ class GRUNDCG(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label, name, topk=None):
-        mask = torch.isfinite(label)
+        mask = torch.isfinite(label) 
 
         if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
             if name == "ic":
@@ -254,17 +254,30 @@ class GRUNDCG(Model):
                 # 路线 2
                 with torch.no_grad():
                     lambda_grads = compute_delta_ndcg(pred.detach(), label.detach(), self.n_layer, sigma=self.sigma, linear=self.linear_ndcg)
-                    lambda_grads /= len(label)
+                    lambda_grads = lambda_grads / lambda_grads.sum()
                 loss = self.loss_fn(pred, label)
                 grad = torch.autograd.grad(loss, pred, create_graph=False)[0]
                 if self.combine_type == 'mult': # 相乘形式
-                    lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'minmax')
+                    # lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'minmax')
+                    lambda_grads = lambda_grads * grad * 1000
+                elif self.combine_type == 'null':
+                    lambda_grads = grad
+                elif self.combine_type == 'add': # 相加形式
+                    # 计算 lambda 梯度
+                    lambda_grads = compute_lambda_gradients(label, pred.detach(), self.n_layer, self.sigma, self.linear_ndcg)
+                    # 检查梯度是否有效
+                    check_grad = torch.sum(lambda_grads).item()
+                    if check_grad == float('inf') or np.isnan(check_grad):
+                        print("Warning: Invalid lambda gradients detected")
+                        print("lambda_grads_sum:", check_grad)
+                        lambda_grads = torch.zeros_like(lambda_grads)
+                    lambda_grads = lambda_grads / lambda_grads.sum()
                 else:
                     raise ValueError(f"Unknown combine_type: {self.combine_type}")
             else:
                 raise ValueError(f"Unknown loss: {self.loss}")
             pred.backward(lambda_grads)                
-            torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0)
+            torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
             # 手动更新梯度
             with torch.no_grad():
                 lr = self.train_optimizer.param_groups[0]['lr']
@@ -461,8 +474,8 @@ class GRUNDCG(Model):
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
         self.test_index = dl_test.get_index()
-        sampler_test = DailyBatchSampler(dl_test)
-        test_loader = DataLoader(dl_test, sampler=sampler_test, num_workers=self.n_jobs)
+        # 这里不能用dailysampler，否则 index 对不上
+        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
         self.GRU_model.eval()
         preds = []
 

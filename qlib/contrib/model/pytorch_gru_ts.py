@@ -195,6 +195,8 @@ class GRU(Model):
             return self.mse(pred[mask], label[mask], weight[mask])
         elif self.loss == "ranking":
             return ranking_loss(pred[mask], label[mask], self.lambda_reg)
+        elif self.loss == "ic":
+            return ic_loss(pred[mask], label[mask])
 
         raise ValueError("unknown loss `%s`" % self.loss)
 
@@ -203,21 +205,21 @@ class GRU(Model):
 
         if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
             if name == "ic":
-                return -ic_loss(pred[mask], label[mask])
+                return -ic_loss(pred[mask], label[mask]).item()
             elif name == "rankic":
-                return -rankic_loss(pred[mask], label[mask])
+                return -rankic_loss(pred[mask], label[mask]).item()
             elif name == "topk_ic":
                 if topk is None:
                     warnings.warn("topk must be specified for topk_ic metric, return nan")
                     return torch.nan
-                return -topk_ic_loss(pred[mask], label[mask], k=topk)
+                return -topk_ic_loss(pred[mask], label[mask], k=topk).item()
             elif name == "topk_rankic":
                 if topk is None:
                     warnings.warn("topk must be specified for topk_ic metric, return nan")
                     return torch.nan
-                return -topk_rankic_loss(pred[mask], label[mask], k=topk)
+                return -topk_rankic_loss(pred[mask], label[mask], k=topk).item()
             elif name == "loss":
-                return -self.loss_fn(pred[mask], label[mask])
+                return -self.loss_fn(pred[mask], label[mask]).item()
 
         raise ValueError("unknown metric `%s`" % name)
 
@@ -316,11 +318,11 @@ class GRU(Model):
                 topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
                 # append scores
                 losses.append(loss.item())
-                scores.append(score.item())
-                ic_scores.append(ic_score.item())
-                rankic_scores.append(rankic_score.item())
-                topk_ic_scores.append(topk_ic_score.item())
-                topk_rankic_scores.append(topk_rankic_score.item())
+                scores.append(score)
+                ic_scores.append(ic_score)
+                rankic_scores.append(rankic_score)
+                topk_ic_scores.append(topk_ic_score)
+                topk_rankic_scores.append(topk_rankic_score)
 
         result = defaultdict(lambda : np.nan)
         result["loss"] = np.mean(losses)
@@ -439,8 +441,7 @@ class GRU(Model):
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
         self.test_index = dl_test.get_index()
-        sampler_test = DailyBatchSampler(dl_test)
-        test_loader = DataLoader(dl_test, sampler=sampler_test, num_workers=self.n_jobs)
+        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
         self.GRU_model.eval()
         preds = []
 
