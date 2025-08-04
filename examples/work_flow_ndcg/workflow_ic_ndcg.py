@@ -7,6 +7,7 @@ Qlib provides two kinds of interfaces.
 
 The interface of (1) is `qrun XXX.yaml`.  The interface of (2) is script like this, which nearly does the same thing as `qrun XXX.yaml`
 """
+import json
 import qlib
 from qlib.constant import REG_CN
 from qlib.contrib.report import analysis_position
@@ -166,7 +167,10 @@ if __name__ == "__main__":
                 },
             },
         }
-        
+
+        # 保存设置        
+        with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
+            json.dump(task, f, indent=2, ensure_ascii=False)
 
         # model initialization
         if args.fake:
