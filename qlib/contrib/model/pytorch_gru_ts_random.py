@@ -319,6 +319,7 @@ class GRU(Model):
                 # 计算RankNet交叉熵损失（仅用于观察）
                 loss = self.loss_fn(pred, label, )
                 score = self.metric_fn(pred, label, name = 'loss')
+                coverage = self.metric_fn(pred, label, name = 'coverage')
                 # 计算 IC
                 ic_score = self.metric_fn(pred, label, "ic")
                 rankic_score = self.metric_fn(pred, label, "rankic")
