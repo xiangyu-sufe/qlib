@@ -30,8 +30,8 @@ if __name__ == "__main__":
     parser.add_argument("--gpu", type=int, default=0,)
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=2400, help="Training dataset length")
-    parser.add_argument("--valid_length", type=int, default=360, help="Validation dataset length")
-    parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
+    parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
+    parser.add_argument("--test_length", type=int, default=240, help="Test dataset length")
 
     # 时间范围参数
     parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
@@ -89,6 +89,36 @@ if __name__ == "__main__":
             "keep": False
         }
     ]
+    # 创建数据处理器缓存
+    handler_cache_path = os.path.join(save_path, "handler_cache.pkl")
+    
+    # 检查是否已有缓存
+    if os.path.exists(handler_cache_path):
+        print(f"✅ 找到数据处理器缓存: {handler_cache_path}")
+        # 使用缓存的处理器配置
+        handler_config = f"file://{handler_cache_path}"
+    else:
+        print("🔄 创建新的数据处理器...")
+        # 使用整个时间范围创建处理器，这样可以覆盖所有任务
+        data_handler_config = {
+            "start_time": args.start_time,
+            "end_time": args.end_time,
+            "fit_start_time": args.start_time,
+            "fit_end_time": args.end_time,
+            "instruments": market,
+            "infer_processors": infer_processors,
+            "learn_processors": learn_processors,
+            "drop_raw": True,
+            "filter_pipe": filter_pipe,
+        }
+        
+        # 创建并保存处理器
+        from qlib.contrib.data.handler import Alpha158
+        handler = Alpha158(**data_handler_config)
+        handler.to_pickle(handler_cache_path, dump_all=True)
+        print(f"✅ 数据处理器已保存到: {handler_cache_path}")
+        handler_config = f"file://{handler_cache_path}"
+    
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
         print(f"开始处理任务 {task_id}")
@@ -106,19 +136,7 @@ if __name__ == "__main__":
         print(f"\033[31m验证日期: {val_start_time} - {val_end_time}\033[0m")
         print(f"\033[31m测试日期: {test_start_time} - {test_end_time}\033[0m")
         
-        print(f"时间范围: 训练({start_time} - {fit_end_time}), 验证({val_start_time} - {val_end_time}), 测试({test_start_time} - {test_end_time})")
-
-        data_handler_config = {
-            "start_time": start_time,
-            "end_time": test_end_time,
-            "fit_start_time": start_time,
-            "fit_end_time": fit_end_time,
-            "instruments": market,
-            "infer_processors":infer_processors,
-            "learn_processors":learn_processors,
-            "drop_raw": True,
-            "filter_pipe": filter_pipe,
-        }   
+        print(f"时间范围: 训练({start_time} - {fit_end_time}), 验证({val_start_time} - {val_end_time}), 测试({test_start_time} - {test_end_time})")   
 
         task = {
             "model": {
@@ -151,11 +169,7 @@ if __name__ == "__main__":
                 "class": "TSDatasetH",
                 "module_path": "qlib.data.dataset",
                 "kwargs": {
-                    "handler": {
-                        "class": "Alpha158",
-                        "module_path": "qlib.contrib.data.handler",
-                        "kwargs": data_handler_config,
-                    },
+                    "handler": handler_config,  # 使用缓存的处理器
                     "segments": {
                         "train": (start_time, fit_end_time),
                         "valid": (val_start_time, val_end_time),

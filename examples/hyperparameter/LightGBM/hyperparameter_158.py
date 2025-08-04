@@ -36,10 +36,17 @@ def objective(trial):
 
 if __name__ == "__main__":
     provider_uri = "~/.qlib/qlib_data/cn_data"
-    GetData().qlib_data(target_dir=provider_uri, region=REG_CN, exists_skip=True)
+    # GetData().qlib_data(target_dir=provider_uri, region=REG_CN, exists_skip=True)
     qlib.init(provider_uri=provider_uri, region="cn")
 
     dataset = init_instance_by_config(CSI300_DATASET_CONFIG)
 
-    study = optuna.Study(study_name="LGBM_158", storage="sqlite:///db.sqlite3")
+    # 创建新的 study 或加载现有的
+    try:
+        study = optuna.load_study(study_name="LGBM_158", storage="sqlite:///db.sqlite3")
+        print("加载现有的 study: LGBM_158")
+    except KeyError:
+        study = optuna.create_study(study_name="LGBM_158", storage="sqlite:///db.sqlite3")
+        print("创建新的 study: LGBM_158")
+    
     study.optimize(objective, n_jobs=6)
