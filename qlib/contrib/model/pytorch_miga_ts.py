@@ -154,6 +154,10 @@ class MIGA(Model):
             "\nnum_heads : {}"
             "\ntop_k : {}"
             "\nexpert_output_dim : {}"
+            "\nomega : {}"
+            "\nepsilon : {}"
+            "\nomega_scheduler : {}"
+            "\nomega_decay : {}"
             "\nnum_layers : {}"
             "\ndropout : {}"
             "\nn_epochs : {}"
@@ -176,6 +180,10 @@ class MIGA(Model):
                 num_heads,
                 top_k,
                 expert_output_dim,
+                omega,
+                epsilon,
+                omega_scheduler,
+                omega_decay,
                 num_layers,
                 dropout,
                 n_epochs,
@@ -504,8 +512,7 @@ class MIGA(Model):
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
         self.test_index = dl_test.get_index()
-        sampler_test = DailyBatchSampler(dl_test)
-        test_loader = DataLoader(dl_test, sampler=sampler_test, num_workers=self.n_jobs)
+        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
         self.MIGA_model.eval()
         preds = []
 
@@ -801,7 +808,6 @@ class MIGAModel(nn.Module):
         # Apply routing weights for final weighted aggregation
         weighted_outputs = all_outputs * routing_weights  # [N, num_groups * num_experts_per_group, expert_output_dim]
         predictions = torch.sum(weighted_outputs, dim=1)  # [N]
-        predictions = self.batch_norm(predictions.unsqueeze(1)).squeeze(1)
 
         return {
             'predictions': predictions,

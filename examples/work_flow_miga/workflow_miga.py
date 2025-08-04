@@ -139,7 +139,7 @@ if __name__ == "__main__":
                     "num_layers": 2,
                     "dropout": 0.0,
                     "n_epochs": 50, # 训练参数
-                    "batch_size": 1,
+                    "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,
                     "metric": "ic",
