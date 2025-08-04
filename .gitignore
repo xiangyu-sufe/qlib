@@ -16,7 +16,8 @@ dist/
 *.hd5
 *.csv
 *.log
-
+db*
+*.json
 .env
 .vim
 .nvimrc
