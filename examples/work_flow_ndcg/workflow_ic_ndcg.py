@@ -169,6 +169,7 @@ if __name__ == "__main__":
         }
 
         # 保存设置        
+        os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
         with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
             json.dump(task, f, indent=2, ensure_ascii=False)
 
