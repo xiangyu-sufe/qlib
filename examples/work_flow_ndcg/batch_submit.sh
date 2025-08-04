@@ -8,12 +8,19 @@ if [ $# -lt 5 ]; then
     exit 1
 fi
 
+# 基础参数
 LR=$1
 WEIGHT_START=$2
 WEIGHT_END=$3
 WEIGHT_STEP=$4
 MAX_JOBS=$5
 WAIT_MINUTES=${6:-3}  # 默认等待3分钟
+
+# 创建基础保存目录
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+BASE_SAVE_DIR="./experiments/weight_exp_${TIMESTAMP}"
+mkdir -p "$BASE_SAVE_DIR"
+echo "实验结果将保存在: $BASE_SAVE_DIR"
 
 # 生成所有weight值
 weights=()
@@ -28,8 +35,11 @@ echo "总共需要运行 ${#weights[@]} 个任务，weight值: ${weights[@]}"
 # 提交初始批次的任务
 for ((i=0; i<MAX_JOBS && i<${#weights[@]}; i++)); do
     weight=${weights[i]}
-    echo "提交任务: 学习率=$LR, weight=$weight"
-    ./submit_lsf.sh $LR $weight
+    # 为每个weight创建唯一的保存路径
+    SAVE_PATH="${BASE_SAVE_DIR}/weight_${weight}"
+    mkdir -p "$SAVE_PATH"
+    echo "提交任务: 学习率=$LR, weight=$weight, 保存路径=$SAVE_PATH"
+    ./submit_lsf.sh $LR $weight "$SAVE_PATH"
     sleep 1  # 避免同时提交太多任务
     unset weights[i]  # 从数组中移除已提交的任务
 done

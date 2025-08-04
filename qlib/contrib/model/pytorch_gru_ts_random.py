@@ -278,7 +278,8 @@ class GRU(Model):
             elif self.loss == "quantile":
                 print(f"{Fore.RED} Quantile Loss: {np.mean(mse_loss_list):.6f}{Style.RESET_ALL}")
                 print(f"{Fore.RED} Coverage: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
-                result["train"] = np.mean(pairwise_loss_list)
+                result["train"] = np.mean(mse_loss_list)
+                result["train_score"] = np.mean(pairwise_loss_list)
             avg_grad_norm = np.mean(epoch_grad_norms)
             print(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
 

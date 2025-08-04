@@ -7,9 +7,10 @@
 #BSUB -e grundcg_%J.err    # 错误输出文件
 #BSUB -m "gpu01|gpu02|gpu03|gpu04|gpu05|gpu06" # 指定 gpu
 
-# 设置默认学习率和weight参数，如果没传参就用默认值
+# 设置默认参数，如果没传参就用默认值
 LR=${1:-0.001}
 WEIGHT=${2:-0.7}
+SAVE_PATH=${3:-.}  # 默认保存到当前目录
 
 # 打印传入参数
 echo "Running GRUNDCG training with learning rate: $LR and weight: $WEIGHT"
@@ -22,4 +23,4 @@ TIME_TAG=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="logs/grundcg_run_lr${LR}_weight${WEIGHT}_${TIME_TAG}.log"
 
 # 运行 Python 脚本，传递学习率和weight参数
-python workflow_ndcg.py --lr "$LR" --weight "$WEIGHT" > "$LOG_FILE" 2>&1
+python workflow_ic_ndcg.py --lr "$LR" --weight "$WEIGHT" --save_path "$SAVE_PATH" > "$LOG_FILE" 2>&1
