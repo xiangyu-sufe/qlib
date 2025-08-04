@@ -34,7 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
+    parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
@@ -80,6 +80,15 @@ if __name__ == "__main__":
     learn_processors = [
         {"class": "DropnaLabel"},
     ]
+    filter_pipe = [
+        {
+            "class": "ExpressionDFilter",
+            "kwargs": {
+                "rule": "amount > 1e-5",
+                "filter_level": "day",
+            }
+        }
+]
 
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
@@ -111,6 +120,7 @@ if __name__ == "__main__":
             # "infer_processors":[],
             # "learn_processors":[],
             "drop_raw": True,
+            "filter_pipe": filter_pipe,
         }   
 
         task = {
@@ -195,8 +205,9 @@ if __name__ == "__main__":
             
             # 保存图片 - 使用多种方法
             try:
-                fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+                fig, title = analysis_position.score_ic_graph(pred_label, show_notebook=False)
                 # 方法1: 尝试保存为PNG
+                model.logger.info(title)
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
                     print(f"✅ 成功保存 score_ic_graph.png")
@@ -218,8 +229,9 @@ if __name__ == "__main__":
                 print(f"❌ 生成 score_ic_graph 时出错: {e}")
                 
             try:
-                fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
+                fig, title = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
                 # 方法1: 尝试保存为PNG
+                model.logger.info(title)
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/top_score_ic_graph.png")
                     print(f"✅ 成功保存 top_score_ic_graph.png")

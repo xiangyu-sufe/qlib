@@ -99,7 +99,7 @@ def calculate_ndcg_optimized(y_true, y_pred, n_layer, linear=False):
     # 将真实收益率标准化到[0, n_layer-1]区间
     y_min, y_max = y_true.min(), y_true.max()
     if y_max > y_min:
-        real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer - 1)
+        real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer)
     else:
         real_scores = torch.zeros_like(y_true)
     
@@ -144,7 +144,7 @@ def compute_lambda_gradients(y_true, y_pred, n_layer, sigma=3.03, linear=False):
     y_min, y_max = y_true.min(), y_true.max()
     
     if y_max > y_min:
-        real_scores = (y_true - y_min) / (y_max - y_min) * (n_layer - 1)
+        real_scores = (y_true - y_min) / (y_max - y_min) * n_layer
         real_scores = real_scores.float()
     else:
         warnings.warn("We get the same prediction for all stocks!!!")
