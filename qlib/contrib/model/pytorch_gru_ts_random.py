@@ -195,7 +195,7 @@ class GRU(Model):
     def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label)
 
-        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
+        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic", "coverage"):
             if name == "ic":
                 return -ic_loss(pred[mask], label[mask]).item()
             elif name == "rankic":
@@ -316,7 +316,6 @@ class GRU(Model):
 
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
-                # 计算RankNet交叉熵损失（仅用于观察）
                 loss = self.loss_fn(pred, label, )
                 coverage = self.metric_fn(pred, label, name = 'coverage')
             # append scores

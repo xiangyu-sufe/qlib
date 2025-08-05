@@ -43,7 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
     args = parser.parse_args()
@@ -115,18 +115,18 @@ if __name__ == "__main__":
         task = {
             "model": {
                 "class": "GRU",
-                "module_path": "qlib.contrib.model.pytorch_gru_ts",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts_random",
                 "kwargs": {
                     "d_feat": 158,
                     "hidden_size": 64,
                     "num_layers": 2,
                     "dropout": 0.0,
                     "n_epochs": 100,
-                    "batch_size": 1,
+                    "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,
-                    "metric": "ic",
-                    "loss": "ic",
+                    "metric": "coverage",
+                    "loss": "quantile",
                     "n_jobs": 24,
                     "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,

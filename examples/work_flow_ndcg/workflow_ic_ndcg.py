@@ -38,12 +38,12 @@ if __name__ == "__main__":
     parser.add_argument("--start_time", type=str, default="2020-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
     parser.add_argument("--combine_type", type=str, default="null", ) # 需要设置
     parser.add_argument("--weight", type=float, default=0.7, )
-    parser.add_argument("--step_len", type=int, default=10, )
+    parser.add_argument("--step_len", type=int, default=20, )
     args = parser.parse_args()
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')

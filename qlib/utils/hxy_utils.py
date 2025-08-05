@@ -1,8 +1,15 @@
 from collections import defaultdict
+import functools
 import pandas as pd
 import numpy as np
 from typing import Dict, List
 import torch
+import re
+import os
+import lmdb
+import tqdm
+import pickle
+
 
 def compute_grad_norm(model):
     """
@@ -249,3 +256,171 @@ def prepare_task_pool(onlyrun_task_id: List[int],
         }
         
     return only_run_task_pool
+
+
+def process_single_factor(factor_data, instrument_df):
+    """
+    将embedding_vector转换为embedding_0, embedding_1, embedding_2, ...
+    """
+    factor_data = factor_data[['date', 'stock_code', 'embedding_vector']]
+    factor_data['date'] = pd.to_datetime(factor_data['date'])
+    factor_data = align_stock_codes(factor_data, instrument_df)
+    factor_data['stock_code'] = factor_data['stock_code'].map(convert_stock_code_to_qlib_format)
+    stacked = factor_data.set_index(['stock_code', 'date'])
+    stacked.index.names = ['instrument', 'datetime']
+    stacked = stacked.swaplevel('datetime', 'instrument')
+    stacked = stacked.sort_index()
+    # 扩张 embedding
+    stacked['embed'] = stacked['embedding_vector'].apply(lambda x: ast.literal_eval(x))
+    embed_df = pd.DataFrame(stacked["embed"].tolist(), index=stacked.index)
+    embed_df = embed_df.add_prefix("embedding_")
+
+    return embed_df
+
+def convert_stock_code_to_qlib_format(stock_code):
+    """将完整股票代码转换为qlib格式（如：000001.SZ -> SZ000001）"""
+    # 解析股票代码，提取数字部分和后缀
+    match = re.match(r'(\d+)\.([A-Z]+)', stock_code)
+    if match:
+        num_part = match.group(1)
+        suffix = match.group(2)
+        
+        # 根据后缀判断交易所
+        if suffix == 'SH':
+            return f"SH{num_part}"
+        elif suffix == 'SZ':
+            return f"SZ{num_part}"
+        elif suffix == 'BJ':
+            return f"BJ{num_part}"
+        else:
+            raise ValueError(f"Invalid stock code: {stock_code}")
+
+def align_stock_codes(df, instrument_df):
+    """
+    根据instrument_path的信息对齐股票代码
+    df: stock_code
+    instrument_df: stock_code
+    """
+    # print("正在对齐股票代码...")
+     # 将embedding数据中的stock_code补全到6位
+    df['stock_code_6digit'] = df['stock_code'].astype(int).astype(str).str.zfill(6)
+   
+    # 从instrument_df中提取数字部分和后缀
+    instrument_df['stock_code_num'] = instrument_df['stock_code'].str.extract(r'(\d+)')[0]
+    instrument_df['stock_code_suffix'] = instrument_df['stock_code'].str.extract(r'\.([A-Z]+)')[0]
+      
+    # 创建映射字典：数字代码 -> 完整代码
+    code_mapping = dict(zip(instrument_df['stock_code_num'], instrument_df['stock_code']))
+    
+    # 检查有多少股票代码在instrument_df中存在
+    valid_stocks = df[df['stock_code_6digit'].isin(code_mapping.keys())]
+    invalid_stocks = df[~df['stock_code_6digit'].isin(code_mapping.keys())]
+    
+    # print(f"有效股票数量: {len(valid_stocks)}")
+    print(f"无效股票数量: {len(invalid_stocks)}")
+    print(invalid_stocks['stock_code_6digit'].unique()[:10])
+    # if len(invalid_stocks) > 0:
+    #     print("无效股票代码示例:")
+    #     
+    
+    # 只保留有效的股票，并映射到完整的股票代码
+    df_aligned = valid_stocks.copy()
+    df_aligned['stock_code'] = df_aligned['stock_code_6digit'].map(code_mapping)
+
+    # print(f"对齐后的数据形状: {df_aligned.shape}")
+    return df_aligned
+
+def read_label(day=10, method='win+neu+zscore'):
+    root_dir = os.path.expanduser('~')
+    ser = pd.read_parquet(f'{root_dir}/GRU/Data/labels/csiall_{method}/ret_{day}d.parquet.gzip')
+    ser = ser.stack(level=-1)
+    ser = ser.swaplevel(0, 1)
+    ser.index.names = ['datetime', 'instrument']
+    df = ser.to_frame('label')
+    # 股票代码转换
+    df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
+    # 日期处理
+    df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)
+    df.sort_index(inplace=True)
+    
+    return df
+
+def read_alpha64():
+    # 读取自有alpha64 数据
+    root_dir = os.path.expanduser('~')
+    df = pd.read_pickle(f'{root_dir}/GRU/Data/alpha64/qlib/alpha64.pkl')
+    df.columns = df.columns.str.replace(r'\..*$', '', regex=True)
+    # 处理股票代码
+    df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
+    df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)
+    df.sort_index(inplace=True)
+    
+    return df
+    
+    
+def read_minute():
+    # 读取自有alpha64 数据
+    root_dir = os.path.expanduser('~')
+    df = pd.read_pickle(f'{root_dir}/GRU/Data/alpha64/qlib/alpha64.pkl')
+    df.columns = df.columns.str.replace(r'\..*$', '', regex=True)
+    # 处理股票代码
+    df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
+    df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)    
+    
+# ==================== 处理新闻新增
+
+# ========== 写入新闻数据 向量索引存储 LMDB
+
+def write_lmdb(df: pd.DataFrame, path="news_feat.lmdb"):
+    env = lmdb.open(path, map_size=1024**4)      # 1 TB 上限
+    with env.begin(write=True) as txn:
+        for (inst, dt), row in tqdm.tqdm(df.iterrows()):
+            key = f"{inst}_{dt}".encode()        # e.g. 'SH600000_2017-01-03'
+            txn.put(key, pickle.dumps(row.values.astype("float32")))
+    env.sync(), env.close()
+
+# =========== 读取新闻数据 带缓存
+
+class NewsStore:
+    def __init__(self, path="news_feat.lmdb"):
+        self.env = lmdb.open(path, readonly=True, lock=False)
+        self.dim = 1024
+
+    # LRU 缓存最近 20*2000 ≈ 4 万条，可调
+    @functools.lru_cache(maxsize=40000)
+    def _fetch(self, inst, dt):
+        key = f"{inst}_{dt}".encode()
+        with self.env.begin() as txn:
+            val = txn.get(key)
+        if val is None:
+            return None
+        return torch.tensor(pickle.loads(val))      # (1024,)
+
+    def get(self, inst, dt):
+        vec = self._fetch(inst, dt)
+        if vec is None:
+            vec = torch.zeros(self.dim)            # 缺失时用 0 向量
+        return vec
+    
+# =============  定义 collate_fn
+
+def make_collate_fn(news_store, step_len, dim_news=1024):
+    """
+    factory 写法，使 news_store 只实例化一次
+    """
+    def collate_fn(batch):
+        insts, dts_seqs, price_feats = zip(*batch)           # 各元素: len=step_len
+        price_feats = torch.stack(price_feats)               # (N, T, Dq)
+
+        # --- 查询新闻 -----------------------------
+        news_feats = torch.zeros(len(batch), step_len, dim_news)
+        for n, (inst, dts) in enumerate(zip(insts, dts_seqs)):
+            for t, dt in enumerate(dts):
+                if dt is None:
+                    continue
+                news_feats[n, t] = news_store.get(inst, dt)  # (1024,)
+        # -----------------------------------------
+
+        feat = torch.cat([price_feats, news_feats], dim=-1)  # (N, T, Dq+Dn)
+        return feat                                           # 直接返回输入张量；标签照旧在 DatasetH 内部
+    return collate_fn
