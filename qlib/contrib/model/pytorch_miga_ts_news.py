@@ -32,13 +32,34 @@ from ..loss.loss import (ic_loss, rankic_loss,
                          topk_ic_loss, topk_rankic_loss,
                            ranking_loss, pairwise_loss, mse)
 from ..loss.miga import MIGALoss
-from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
+from qlib.utils.hxy_utils import (compute_grad_norm, 
+                                  compute_layerwise_grad_norm,
+                                  IndexedSeqDataset,
+                                  make_collate_fn,)
 
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
 import os
 
 
+# class DailyBatchSampler(Sampler):
+#     def __init__(self, data_source):
+#         self.data_source = data_source
+#         # calculate number of samples in each batch
+#         self.daily_count = (
+#             pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
+#         )
+#         self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # calculate begin index of each batch
+#         self.daily_index[0] = 0
+
+#     def __iter__(self):
+#         for idx, count in zip(self.daily_index, self.daily_count):
+#             yield np.arange(idx, idx + count)
+
+#     def __len__(self):
+#         return len(self.data_source)
+    
+    
 class DailyBatchSampler(Sampler):
     """
     Yield all rows of the same trading day as one batch,
@@ -96,6 +117,8 @@ class MIGA(Model):
         omega_decay=0.96,
         debug=False,
         save_path=None,
+        step_len=1,
+        news_store=None,
         **kwargs,
     ):
         # Set logger.
@@ -126,6 +149,8 @@ class MIGA(Model):
         self.lambda_reg = lambda_reg
         self.debug = debug
         self.save_path = save_path
+        self.step_len = step_len
+        self.news_store = news_store
         
         if  self.loss == "miga":
             self.omega = omega
@@ -212,25 +237,20 @@ class MIGA(Model):
             torch.manual_seed(self.seed)
         
         # 路由器设置
-        router = Router(
-            input_dim=self.d_feat,
-            hidden_dim=self.hidden_size,
-            num_groups=self.num_groups,
-            num_experts_per_group=self.num_experts_per_group,
-            model='gru'
+        
+        router = PriceNewsRouter(
+            price_dim=self.d_feat,
+            news_dim=1024,
+            d_model=self.hidden_size,
+            n_heads=self.num_heads, # 这里的 num_heads 共用了
+            d_gru=self.hidden_size,
+            dropout=self.dropout
         )
 
-        # price_news_router = PriceNewsRouter(
-        #     price_dim=self.d_feat,
-        #     news_dim=1024,
-        #     d_model=self.hidden_size,
-        #     n_heads=self.num_heads,
-        #     d_gru=self.hidden_size,
-        #     dropout=self.dropout
-        # )
-
-        self.MIGA_model = MIGAModel(
+        # 定义 MIGA 新闻模型
+        self.MIGA_model = MIGANewsModel(
             input_dim=self.d_feat,
+            news_dim=1024,
             num_groups=self.num_groups,
             num_experts_per_group=self.num_experts_per_group,
             num_heads=self.num_heads,
@@ -300,16 +320,19 @@ class MIGA(Model):
         router_loss_list = []
 
             
-        for data, weight in data_loader:
+        for data, news_mask in tqdm(data_loader):
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:-1].to(self.device)
-            label = data[:, -1, -1].to(self.device).float()
-
-            output = self.MIGA_model(feature.float())
+            news_mask.squeeze_(0)
+            price_feature = data[:,:, :self.d_feat].to(self.device)
+            label = data[:, -1, -1].to(self.device)
+            news_feature = data[:,:, self.d_feat+1:].to(self.device)
+            news_mask = news_mask.to(self.device)
+            
+            output = self.MIGA_model(price_feature, news_feature, news_mask)
             pred = output['predictions']
             hidden_representations = output['hidden_representations']
             
-            loss_dict = self.loss_fn(pred, label, hidden_representations, weight)
+            loss_dict = self.loss_fn(pred, label, hidden_representations,)
             self.train_optimizer.zero_grad()
             loss = loss_dict['total_loss']
             loss.backward()
@@ -370,13 +393,16 @@ class MIGA(Model):
         topk_rankic_scores = []
         
   
-        for data, weight in data_loader:
+        for data, news_mask in data_loader:
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:-1].to(self.device)
-            label = data[:, -1, -1].to(self.device).float()
+            news_mask.squeeze_(0)
+            price_feature = data[:,:, :self.d_feat].to(self.device)
+            label = data[:, -1, -1].to(self.device)
+            news_feature = data[:,:, self.d_feat+1:].to(self.device)
+            news_mask = news_mask.to(self.device)
             
             with torch.no_grad():
-                output = self.MIGA_model(feature.float())
+                output = self.MIGA_model(price_feature.float(), news_feature.float(), news_mask)
                 pred = output['predictions']
                 hidden_representations = output['hidden_representations']
                 loss_dict = self.loss_fn(pred, label, hidden_representations)
@@ -429,6 +455,9 @@ class MIGA(Model):
         # daily batch sampler
         sampler_train = DailyBatchSampler(dl_train)
         sampler_valid = DailyBatchSampler(dl_valid)
+        # index 下
+        dl_train = IndexedSeqDataset(dl_train)
+        dl_valid = IndexedSeqDataset(dl_valid)
 
         if reweighter is None:
             wl_train = np.ones(len(dl_train))
@@ -440,15 +469,17 @@ class MIGA(Model):
             raise ValueError("Unsupported reweighter type.")
 
         train_loader = DataLoader(
-            ConcatDataset(dl_train, wl_train),
+            dl_train,
             sampler=sampler_train,
             num_workers=self.n_jobs,
+            collate_fn=make_collate_fn(self.news_store, self.step_len),
             drop_last=True,
         )
         valid_loader = DataLoader(
-            ConcatDataset(dl_valid, wl_valid),
+            dl_valid,
             sampler=sampler_valid,
             num_workers=self.n_jobs,
+            collate_fn=make_collate_fn(self.news_store, self.step_len),
             drop_last=True,
         )
 
@@ -822,6 +853,120 @@ class MIGAModel(nn.Module):
             'routing_weights_flat': routing_weights_flat  # [N, total_experts] - 展平的路由权重
         }
 
+class MIGANewsModel(nn.Module):
+    """
+    Mixture of Expert with Group Aggregation (MIGA)
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        news_dim: int = 1024,
+        num_groups: int = 4,
+        num_experts_per_group: int = 4,
+        num_heads: int = 8,
+        top_k: int = 2,
+        expert_output_dim: int = 1,
+        router: Optional[nn.Module] = None,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.news_dim = news_dim
+        self.num_groups = num_groups
+        self.num_experts_per_group = num_experts_per_group
+        self.num_heads = num_heads
+        self.top_k = top_k
+        self.expert_output_dim = expert_output_dim
+        self.hidden_dim = self.num_groups * self.num_experts_per_group
+        self.batch_norm = nn.BatchNorm1d(1)
+        # Router
+        self.router = router 
+        self.hidden_to_gate = nn.Linear(self.hidden_dim, self.num_groups * self.num_experts_per_group)
+
+        # Expert groups
+        self.expert_groups = nn.ModuleList([
+            nn.ModuleList([
+                Expert(self.hidden_dim, expert_output_dim)
+                for _ in range(num_experts_per_group)
+            ]) for _ in range(num_groups)
+        ])
+        
+        # Inner group attention modules
+        self.inner_group_attentions = nn.ModuleList([
+            InnerGroupAttention(self.num_experts_per_group, num_heads)
+            for _ in range(num_groups)
+        ])
+        
+        # Final output projection
+        self.output_projection = nn.Linear(expert_output_dim, 1)
+        
+    def forward(self, price_feature: torch.Tensor, 
+                news_feature: torch.Tensor, 
+                news_mask: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            price_feature: [N, T, D] - N stocks, T time steps, D features
+            news_feature: [N, T, D] - N stocks, T time steps, D features
+            news_mask: [N, T] - N stocks, T time steps
+        Returns:
+            predictions: [N, 1] - stock return predictions
+            routing_weights: routing weights for analysis
+        """
+        batch_size = price_feature.size(0)
+
+        # Get router outputs - only hidden representations
+        hidden_representations = self.router(price_feature, news_feature, news_mask)  # [N, hidden_dim]
+
+        # Select top-k dimensions/features from hidden representations
+        top_k_values, top_k_indices = torch.topk(hidden_representations, self.top_k, dim=1)  # [N, k]
+
+        # Create mask for selected features
+        mask = torch.zeros_like(hidden_representations)
+        mask.scatter_(1, top_k_indices, 1.0)
+
+        # Apply mask and softmax to get routing weights
+        masked_hidden = hidden_representations.masked_fill(mask == 0, float('-inf'))
+        routing_weights_flat = F.softmax(masked_hidden, dim=1)  # [N, hidden_dim]
+
+        # Reshape to match group structure (assuming hidden_dim = num_groups * num_experts_per_group)
+        routing_weights = routing_weights_flat.view(batch_size, self.num_groups, self.num_experts_per_group)
+        routing_weights = routing_weights.view(batch_size, -1)
+        # Process each group
+        all_group_outputs = []
+
+        for group_idx in range(self.num_groups):
+            # Get expert outputs for this group
+            expert_outputs = []
+
+            for expert_idx in range(self.num_experts_per_group):
+                expert = self.expert_groups[group_idx][expert_idx]
+                expert_output = expert(hidden_representations)  # [N, expert_output_dim]
+                expert_output = expert_output.squeeze()
+                assert expert_output.dim() == 1, f"expert_output.dim() = {expert_output.dim()}"
+                expert_outputs.append(expert_output)
+
+            # Stack expert outputs within the group for attention
+            group_output = torch.stack(expert_outputs, dim=1)  # [N, num_experts_per_group, expert_output_dim]
+
+            # Apply inner group attention
+            aggregated_output = self.inner_group_attentions[group_idx](group_output)  # [N, num_experts_per_group, expert_output_dim]
+
+            all_group_outputs.append(aggregated_output)
+
+        # Concatenate all groups along the expert dimension
+        all_outputs = torch.cat(all_group_outputs, dim=1)  # [N, num_groups * num_experts_per_group]
+
+        # Apply routing weights for final weighted aggregation
+        weighted_outputs = all_outputs * routing_weights  # [N, num_groups * num_experts_per_group, expert_output_dim]
+        predictions = torch.sum(weighted_outputs, dim=1)  # [N]
+
+        return {
+            'predictions': predictions,
+            'routing_weights': routing_weights,  # [N, num_groups, num_experts_per_group]
+            'hidden_representations': hidden_representations,
+            'top_k_indices': top_k_indices,  # [N, k] - 选中的专家索引
+            'routing_weights_flat': routing_weights_flat  # [N, total_experts] - 展平的路由权重
+        }
+
 
 class CrossAttentionAggregator(nn.Module):
     def __init__(self, input_dim_ts,
@@ -863,10 +1008,11 @@ class PriceNewsCrossAttn(nn.Module):
         self.ln = nn.LayerNorm(d_model)
         self.gru = nn.GRU(input_size=d_model, hidden_size=d_gru, batch_first=True)
 
-    def forward(self, price, news):
+    def forward(self, price, news, mask):
         """
         price: [N, T, D_p]
         news:  [N, T, D_n]
+        mask:  [N, T]
         return: [N, T, d_model]
         """
         # 1. 投影
@@ -875,7 +1021,10 @@ class PriceNewsCrossAttn(nn.Module):
 
         # 2. Cross-Attention: q=price, k/v=news
         # nn.MultiheadAttention expects input as [batch, seq_len, embed_dim]
-        attn_out, _ = self.cross_attn(query=price_proj, key=news_proj, value=news_proj)
+        attn_out, _ = self.cross_attn(query=price_proj,
+                                      key=news_proj,
+                                      value=news_proj,
+                                      key_padding_mask=mask)
 
         # 3. Residual + Dropout
         fused = self.ln(price_proj + self.resid_dropout(attn_out))  # [N, T, d_model]
@@ -906,13 +1055,14 @@ class PriceNewsRouter(nn.Module):
         self.n_heads = n_heads
         self.price_cross_attn = PriceNewsCrossAttn(price_dim, news_dim, d_model, n_heads, d_gru, dropout)
 
-    def forward(self, price, news):
+    def forward(self, price, news, mask):
         """
         price: [N, T, D_p]
         news:  [N, T, D_n]
+        mask:  [N, T]
         return: [N, T, d_model]
         """
-        return self.price_cross_attn(price, news)
+        return self.price_cross_attn(price, news, mask)
         
         
 

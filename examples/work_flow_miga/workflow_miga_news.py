@@ -27,6 +27,25 @@ import pandas as pd
 import numpy as np
 import os
 
+# class DailyBatchSampler(Sampler):
+#     def __init__(self, data_source):
+#         self.data_source = data_source
+#         # calculate number of samples in each batch
+#         self.daily_count = (
+#             pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
+#         )
+#         self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # calculate begin index of each batch
+#         self.daily_index[0] = 0
+
+#     def __iter__(self):
+#         for idx, count in zip(self.daily_index, self.daily_count):
+#             yield np.arange(idx, idx + count)
+
+#     def __len__(self):
+#         return len(self.data_source)
+
+
+
 
 if __name__ == "__main__":
     # 数据参数
@@ -37,14 +56,14 @@ if __name__ == "__main__":
     parser.add_argument("--onlyrun_task_id", type=int, default=None, help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
-    
+    parser.add_argument("--step_len", type=int, default=20, help="Step length")
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
+    parser.add_argument("--train_length", type=int, default=240, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
+    parser.add_argument("--start_time", type=str, default="2020-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型一般参数
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
@@ -77,13 +96,14 @@ if __name__ == "__main__":
     market = None # 默认用全部
     benchmark = "SH000905"
     # 读取新闻数据
+    a = time.time()
     news_lmdb_path = '/home/huxiangyu/.qlib/llm_data/embedding.lmdb'
     if not os.path.exists(news_lmdb_path):
         news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
         write_lmdb(news_embed, news_lmdb_path)
     else:
-        news_embed = NewsStore(news_lmdb_path)
-    print(f'新闻数据占用内存大小: {news_embed.memory_usage} MB')
+        news_store = NewsStore(news_lmdb_path)
+    print(f'新闻数据占用内存大小: {news_store.memory_usage} MB')
     # 读取量价数据
     alpha_64 = read_alpha64()
     labels = read_label(day=10, method = 'win+neu+zscore')
@@ -92,6 +112,7 @@ if __name__ == "__main__":
     labels = labels.loc[labels.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
     data = alpha_64.join(labels, how='left')
     data.columns = pd.MultiIndex.from_tuples([('feature', col) for col in alpha_64.columns] + [('label', col) for col in labels.columns])
+    print("读取所有数据用时: ", time.time() - a)
     print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
     # 创建 DataLoader
     sdl_pkl = StaticDataLoader(config=data)
@@ -158,9 +179,9 @@ if __name__ == "__main__":
         task = {
             "model": {
                 "class": "MIGA",
-                "module_path": "qlib.contrib.model.pytorch_miga_ts",
+                "module_path": "qlib.contrib.model.pytorch_miga_ts_news",
                 "kwargs": {
-                    "d_feat": 158, # 模型参数
+                    "d_feat": 64, # 模型参数
                     "hidden_size": 64,
                     "num_groups": 2,
                     "num_experts_per_group": 4,
@@ -183,7 +204,9 @@ if __name__ == "__main__":
                     "omega_scheduler": args.omega_scheduler,
                     "omega_decay": args.omega_decay,
                     "debug": True,  # Set to True for debugging mode
-                    "save_path": save_path
+                    "save_path": save_path,
+                    "step_len": args.step_len,
+                    "news_store": news_store,
                 },
             },
             "dataset": {
@@ -201,8 +224,7 @@ if __name__ == "__main__":
                         "test": (test_start_time, test_end_time),
                     },
                     "enable_cache": True ,
-                    "step_len": args.step_len,
-                    
+                    "step_len": args.step_len, 
                 },
             },
         }
@@ -211,14 +233,6 @@ if __name__ == "__main__":
         # model initialization
         model = init_instance_by_config(task["model"])
         dataset = init_instance_by_config(task["dataset"])
-        # wrap dataset with  IndexedSeqDataset
-        dataset = IndexedSeqDataset(dataset)
-        loader = DataLoader(
-            dataset, 
-            batch_size=5000,
-            collate_fn=make_collate_fn(news_store, step_len=20),
-        )
-        
         model.fit(dataset)
         score = model.predict(dataset)
         score.name = 'score'

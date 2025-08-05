@@ -390,7 +390,7 @@ class NewsStore:
     # LRU 缓存最近 20*2000 ≈ 4 万条，可调
     @functools.lru_cache(maxsize=40000)
     def _fetch(self, inst, dt):
-        key = f"{inst}_{dt}".encode()
+        key = f"{dt}_{inst}".encode()
         with self.env.begin() as txn:
             val = txn.get(key)
         if val is None:
@@ -406,6 +406,7 @@ class NewsStore:
     @property
     def memory_usage(self):
         return self.env.info().get("map_size") // 1e6
+
 # =============  定义 collate_fn
 
 def make_collate_fn(news_store, step_len, dim_news=1024):
@@ -413,21 +414,49 @@ def make_collate_fn(news_store, step_len, dim_news=1024):
     factory 写法，使 news_store 只实例化一次
     """
     def collate_fn(batch):
-        insts, dts_seqs, price_feats = zip(*batch)           # 各元素: len=step_len
-        price_feats = torch.stack(price_feats)               # (N, T, Dq)
+        insts, dts_seqs, price = zip(*batch)
+        price = torch.stack(price)                     # (N, T, Dq)
 
-        # --- 查询新闻 -----------------------------
-        news_feats = torch.zeros(len(batch), step_len, dim_news)
-        for n, (inst, dts) in enumerate(zip(insts, dts_seqs)):
-            for t, dt in enumerate(dts):
-                if dt is None:
-                    continue
-                news_feats[n, t] = news_store.get(inst, dt)  # (1024,)
-        # -----------------------------------------
-
-        feat = torch.cat([price_feats, news_feats], dim=-1)  # (N, T, Dq+Dn)
-        return feat                                           # 直接返回输入张量；标签照旧在 DatasetH 内部
+        news_list, mask_list = [], []
+        for ins, dts in zip(insts, dts_seqs):
+            news, m = _fetch_news_seq(news_store, ins, dts, dim_news)
+            news_list.append(news)
+            mask_list.append(m)
+        news   = torch.stack(news_list)                # (N, T, Dn)
+        n_mask = torch.stack(mask_list)                # (N, T)  BoolTensor
+        # 过滤掉一条新闻都没有的股票
+        valid_idx = ~(n_mask.all(dim=1))  # shape: [N]，True 表示这条样本“有有效新闻”
+        price = price[valid_idx]
+        news = news[valid_idx]
+        n_mask = n_mask[valid_idx]        
+        feat = torch.cat([price, news], dim=-1)        # (N, T, Dq+Dn)
+        return feat, n_mask   # <-- 多返回一个 mask
+    
     return collate_fn
+
+def _fetch_news_seq(store, inst, dts_seq, dim_news):
+    N, T, = len(inst), len(dts_seq[0])
+    vecs, mask = [], []
+    if isinstance(inst, list):
+        for ins, dts in zip(inst, dts_seq):
+            for dt in dts:
+                # 对时间循环
+                if dt is None: # 时间为None
+                    vecs.append(torch.zeros(dim_news))
+                    mask.append(True)           
+                else:
+                    val = store._fetch(ins, dt)
+                    if val is None: # 新闻数据缺失
+                        vecs.append(torch.zeros(dim_news))
+                        mask.append(True)
+                    else:
+                        vecs.append(val)
+                        mask.append(False)
+                        
+    vecs = torch.stack(vecs).reshape(N, T, dim_news)
+    mask = torch.tensor(mask).reshape(N, T)
+    
+    return vecs, mask   # (N, T, Dn) , (N, T)
 
 # Dataset
 
@@ -439,23 +468,36 @@ class IndexedSeqDataset(torch.utils.data.Dataset):
     Wrap a TSDatasetH/TSDataSampler to also return (instrument, datetime_seq).
     """
     def __init__(self, tsds: TSDatasetH):
-        self.ds = tsds         # tsds[idx] -> (step_len, Dq)
+        # If the passed object is a TSDatasetH instance, use its underlying
+        # TSDataSampler (ts_sampler) which implements `__getitem__`; otherwise
+        # assume the object itself is already a sampler.
+        self.ds = tsds.ts_sampler if hasattr(tsds, "ts_sampler") else tsds
         self.step_len = tsds.step_len
 
     def __len__(self):
         return len(self.ds)
 
     def __getitem__(self, idx):
-        # 量价特征 (T, Dq)
-        price_feat = self.ds[idx]
+        # 当 `idx` 是单个 int -> 返回单只股票；
+        # 当 `idx` 是 list/ndarray -> 返回多个股票的并行样本
 
-        # --- 取 instrument & datetime 序列 -----------------------
-        i, j = self.ds._get_row_col(idx)          # 行、列索引
-        #   rows 覆盖 step_len 个历史时点；不足时头部用 None 占位
-        rows = list(range(max(i - self.step_len + 1, 0), i + 1))
-        rows = [None]*(self.step_len-len(rows)) + rows  # 左侧 pad
-        dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
-        inst = self.ds.idx_df.columns[j]
-        # -------------------------------------------------------
+        price_feat = self.ds[idx]  # TSDataSampler 支持 list/ndarray
 
-        return inst, dts, torch.tensor(price_feat)    # (T, Dq)
+        if isinstance(idx, (list, np.ndarray)):
+            insts, dts_seqs = [], []
+            for single_idx in idx:
+                i, j = self.ds._get_row_col(single_idx)
+                rows = list(range(max(i - self.step_len + 1, 0), i + 1))
+                rows = [None] * (self.step_len - len(rows)) + rows
+                dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
+                inst = self.ds.idx_df.columns[j]
+                insts.append(inst)
+                dts_seqs.append(dts)
+            return insts, dts_seqs, torch.tensor(price_feat)
+        else:
+            i, j = self.ds._get_row_col(idx)
+            rows = list(range(max(i - self.step_len + 1, 0), i + 1))
+            rows = [None] * (self.step_len - len(rows)) + rows
+            dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
+            inst = self.ds.idx_df.columns[j]
+            return inst, dts, torch.tensor(price_feat)

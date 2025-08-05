@@ -35,19 +35,25 @@ from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
 
 init(autoreset=True)
+
 class DailyBatchSampler(Sampler):
+    """
+    Yield all rows of the same trading day as one batch,
+    independent of the index sort order.
+    """
     def __init__(self, data_source):
         self.data_source = data_source
-        # calculate number of samples in each batch
-        self.daily_count = (
-            pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
-        )
-        self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # calculate begin index of each batch
-        self.daily_index[0] = 0
+        # 把 datetime -> 行号数组 建立映射
+        dts = self.data_source.get_index().get_level_values("datetime")
+        self.groups = defaultdict(list)
+        for pos, dt in enumerate(dts):
+            self.groups[dt].append(pos)
+        # 交易日按时间排序，保证训练顺序一致
+        self.order = sorted(self.groups.keys())
 
     def __iter__(self):
-        for idx, count in zip(self.daily_index, self.daily_count):
-            yield np.arange(idx, idx + count)
+        for dt in self.order:
+            yield np.array(self.groups[dt])
 
     def __len__(self):
         return len(self.data_source)
