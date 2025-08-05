@@ -8,7 +8,7 @@ def quantile_loss(pred, label, tau=0.5):
     return torch.mean(loss)          
 
 def coverage(pred, label, tau):
-    coverage = (label <= pred).float().mean().item()
+    coverage = (label <= pred).float().mean()
     
     return coverage - tau   
     

@@ -255,8 +255,8 @@ class GRU(Model):
                         pairwise_loss_list.append(pr_loss)
                 elif self.loss == "quantile":
                     with torch.no_grad():
-                        quantile_loss = quantile_loss(pred, label, self.quantile).item()
-                        mse_loss_list.append(quantile_loss)
+                        qrloss = quantile_loss(pred, label, self.quantile).item()
+                        mse_loss_list.append(qrloss)
                         train_coverage = coverage(pred, label, self.quantile).item()
                         pairwise_loss_list.append(train_coverage)
                 # 计算梯度范数
