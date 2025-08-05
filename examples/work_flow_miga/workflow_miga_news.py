@@ -27,25 +27,6 @@ import pandas as pd
 import numpy as np
 import os
 
-# class DailyBatchSampler(Sampler):
-#     def __init__(self, data_source):
-#         self.data_source = data_source
-#         # calculate number of samples in each batch
-#         self.daily_count = (
-#             pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
-#         )
-#         self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # calculate begin index of each batch
-#         self.daily_index[0] = 0
-
-#     def __iter__(self):
-#         for idx, count in zip(self.daily_index, self.daily_count):
-#             yield np.arange(idx, idx + count)
-
-#     def __len__(self):
-#         return len(self.data_source)
-
-
-
 
 if __name__ == "__main__":
     # 数据参数
