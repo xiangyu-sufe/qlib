@@ -37,7 +37,8 @@ from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
 import os
-
+import logging
+import sys
 
 class DailyBatchSampler(Sampler):
     """
@@ -100,6 +101,10 @@ class MIGA(Model):
     ):
         # Set logger.
         self.logger = get_module_logger("GRU")
+        if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.INFO)
+            self.logger.addHandler(handler)
         self.logger.info("GRU pytorch version...")
         
         # set hyper-parameters.

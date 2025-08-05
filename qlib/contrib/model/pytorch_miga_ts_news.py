@@ -326,8 +326,10 @@ class MIGA(Model):
         expert_loss_list = []
         router_loss_list = []
 
-            
-        for data, news_mask in tqdm(data_loader):
+        total_len = 0
+        count = 0
+        pbar = tqdm(data_loader, desc="training...")
+        for data, news_mask in pbar:
             data.squeeze_(0) # 去除横截面 dim
             news_mask.squeeze_(0)
             price_feature = data[:,:, :self.d_feat].to(self.device)
@@ -365,6 +367,9 @@ class MIGA(Model):
                 epoch_grad_norms_layer.append(grad_norm_layer)
 
             tot_loss_list.append(loss_dict['total_loss'].item())
+            total_len += len(data)
+            count += 1
+            pbar.set_postfix({"Average Length": total_len / count})
 
         result["train"] = np.mean(tot_loss_list)
 
@@ -399,8 +404,10 @@ class MIGA(Model):
         topk_ic_scores = []
         topk_rankic_scores = []
         
-  
-        for data, news_mask in data_loader:
+        total_len = 0
+        count = 0
+        pbar = tqdm(data_loader, desc="evaluating...") 
+        for data, news_mask in pbar:
             data.squeeze_(0) # 去除横截面 dim
             news_mask.squeeze_(0)
             price_feature = data[:,:, :self.d_feat].to(self.device)
@@ -429,6 +436,9 @@ class MIGA(Model):
                 rankic_scores.append(rankic_score)
                 topk_ic_scores.append(topk_ic_score)
                 topk_rankic_scores.append(topk_rankic_score)
+                total_len += len(data)
+                count += 1
+                pbar.set_postfix({"Average Length": total_len / count})
 
         result: DefaultDict[str, np.floating] = defaultdict(lambda: np.float64(np.nan))        
         result["loss"] = np.mean(losses)
@@ -553,16 +563,24 @@ class MIGA(Model):
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
         self.test_index = dl_test.get_index()
-        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
+        dl_test = IndexedSeqDataset(dl_test)
+
+        test_loader = DataLoader(dl_test,
+                                 batch_size=self.batch_size,
+                                 num_workers=self.n_jobs,
+                                 collate_fn=make_collate_fn(self.news_store, self.step_len))
         self.MIGA_model.eval()
         preds = []
 
-        for data in test_loader:
+        for data, news_mask in test_loader:
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:-1].to(self.device)
+            news_mask.squeeze_(0)
+            feature = data[:, :, :self.d_feat].to(self.device)
+            news_feature = data[:, :, self.d_feat+1:].to(self.device)
+            news_mask = news_mask.to(self.device)
 
             with torch.no_grad():
-                output = self.MIGA_model(feature.float())
+                output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
                 pred = output['predictions'].detach().cpu().numpy()
 
             preds.append(pred)

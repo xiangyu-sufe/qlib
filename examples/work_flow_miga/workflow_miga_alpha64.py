@@ -44,8 +44,8 @@ if __name__ == "__main__":
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2024-9-30", help="Start time for data")
-    parser.add_argument("--end_time", type=str, default="2025-05-30", help="End time for data")
+    parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
+    parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型一般参数
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
@@ -160,10 +160,10 @@ if __name__ == "__main__":
         task = {
             "model": {
                 "class": "MIGA",
-                "module_path": "qlib.contrib.model.pytorch_miga_ts_news",
+                "module_path": "qlib.contrib.model.pytorch_miga_ts",
                 "kwargs": {
                     "d_feat": 64, # 模型参数
-                    "hidden_size": 64,
+                    "hidden_size": 16,
                     "num_groups": 2,
                     "num_experts_per_group": 4,
                     "num_heads": 4,

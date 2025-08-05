@@ -388,7 +388,7 @@ class NewsStore:
         self.dim = 1024
 
     # LRU 缓存最近 20*2000 ≈ 4 万条，可调
-    @functools.lru_cache(maxsize=40000)
+    @functools.lru_cache(maxsize=60000)
     def _fetch(self, inst, dt):
         key = f"{dt}_{inst}".encode()
         with self.env.begin() as txn:
