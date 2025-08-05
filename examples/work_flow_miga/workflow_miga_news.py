@@ -13,14 +13,16 @@ from qlib.contrib.report import analysis_model, analysis_position
 from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.utils.hxy_utils import (
     get_label, prepare_task_pool, read_alpha64, read_minute, read_label,
-    NewsStore, make_collate_fn, write_lmdb
+    NewsStore, make_collate_fn, write_lmdb, IndexedSeqDataset
 )
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
 from qlib.tests.data import GetData
 from qlib.tests.config import CSI300_BENCH, CSI300_GBDT_TASK
 from qlib.data.dataset.handler import DataHandlerLP
-from torch.utils.data import Sampler
+from torch.utils.data import Sampler, DataLoader
+from qlib.data.dataset.loader import StaticDataLoader, QlibDataLoader  
+
 import pandas as pd
 import numpy as np
 import os
@@ -72,33 +74,28 @@ if __name__ == "__main__":
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
     # provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
     # qlib.init(provider_uri=provider_uri, region=REG_CN)
-    market = "csiall"
+    market = None # 默认用全部
     benchmark = "SH000905"
-    # 处理数据
-    a = time.time()
-    labels = read_label(day=10, method = 'win+neu+zscore')
-    news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
+    # 读取新闻数据
     news_lmdb_path = '/home/huxiangyu/.qlib/llm_data/embedding.lmdb'
     if not os.path.exists(news_lmdb_path):
+        news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
         write_lmdb(news_embed, news_lmdb_path)
     else:
         news_embed = NewsStore(news_lmdb_path)
-    print(f'新闻数据占用内存大小: {news_embed.memory_usage().sum() / 1e6} MB')
-    
+    print(f'新闻数据占用内存大小: {news_embed.memory_usage} MB')
+    # 读取量价数据
     alpha_64 = read_alpha64()
-    
+    labels = read_label(day=10, method = 'win+neu+zscore')
     # 选出大于2018年的数据
     alpha_64 = alpha_64.loc[alpha_64.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
-    # 选出大于2018年的数据
     labels = labels.loc[labels.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
-    print("读取数据花费时间：{} s".format(time.time() - a))
-    a = time.time()
-    data = alpha_64.join(news_embed, how='left')
-    print("alpha_64.join(news_embed, how='left') :{} s".format(time.time() - a))
-    a = time.time()
-    data = data.join(labels, how='left')
-    print("data.join(labels, how='left') :{} s".format(time.time() - a))
-    print(f"数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
+    data = alpha_64.join(labels, how='left')
+    data.columns = pd.MultiIndex.from_tuples([('feature', col) for col in alpha_64.columns] + [('label', col) for col in labels.columns])
+    print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
+    # 创建 DataLoader
+    sdl_pkl = StaticDataLoader(config=data)
+    
     task_config = {
         'train': args.train_length,
         'valid': args.valid_length,
@@ -111,16 +108,7 @@ if __name__ == "__main__":
                                         start_time = args.start_time,
                                         end_time = args.end_time)
     
-    infer_processors = [
-        {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
-        {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
-        {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
-    ]
-    # ic label 不用处理
-    learn_processors = [
-        {"class": "DropnaLabel"},
-    ]
+
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
         print(f"开始处理任务 {task_id}")
@@ -139,15 +127,31 @@ if __name__ == "__main__":
         print(f"\033[31m测试日期: {test_start_time} - {test_end_time}\033[0m")
         
         print(f"时间范围: 训练({start_time} - {fit_end_time}), 验证({val_start_time} - {val_end_time}), 测试({test_start_time} - {test_end_time})")
-
+        infer_processors = [
+            {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
+            # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+            {"class": "RobustZScoreNorm", 
+             "kwargs": {
+                        "fields_group": "feature",
+                        "fit_start_time": start_time,
+                        "fit_end_time": fit_end_time
+                        }},
+            {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
+        ]
+        # ic label 不用处理
+        learn_processors = [
+            {"class": "DropnaLabel"},
+        ]
         data_handler_config = {
             "start_time": start_time,
             "end_time": test_end_time,
-            "fit_start_time": start_time,
-            "fit_end_time": fit_end_time,
+            # "fit_start_time": start_time,
+            # "fit_end_time": fit_end_time,
             "instruments": market,
+            "data_loader": sdl_pkl,
             "infer_processors":infer_processors,
             "learn_processors":learn_processors,
+            "process_type": "append",
             "drop_raw": True,
         }   
             
@@ -187,8 +191,8 @@ if __name__ == "__main__":
                 "module_path": "qlib.data.dataset",
                 "kwargs": {
                     "handler": {
-                        "class": "Alpha158",
-                        "module_path": "qlib.contrib.data.handler",
+                        "class": "DataHandlerLP",
+                        "module_path": "qlib.data.dataset.handler",
                         "kwargs": data_handler_config,
                     },
                     "segments": {
@@ -197,6 +201,7 @@ if __name__ == "__main__":
                         "test": (test_start_time, test_end_time),
                     },
                     "enable_cache": True ,
+                    "step_len": args.step_len,
                     
                 },
             },
@@ -206,6 +211,14 @@ if __name__ == "__main__":
         # model initialization
         model = init_instance_by_config(task["model"])
         dataset = init_instance_by_config(task["dataset"])
+        # wrap dataset with  IndexedSeqDataset
+        dataset = IndexedSeqDataset(dataset)
+        loader = DataLoader(
+            dataset, 
+            batch_size=5000,
+            collate_fn=make_collate_fn(news_store, step_len=20),
+        )
+        
         model.fit(dataset)
         score = model.predict(dataset)
         score.name = 'score'

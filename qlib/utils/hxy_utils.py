@@ -9,7 +9,8 @@ import os
 import lmdb
 import tqdm
 import pickle
-
+import torch
+from qlib.data.dataset import TSDatasetH   # 已在 sys.path 中
 
 def compute_grad_norm(model):
     """
@@ -402,6 +403,9 @@ class NewsStore:
             vec = torch.zeros(self.dim)            # 缺失时用 0 向量
         return vec
     
+    @property
+    def memory_usage(self):
+        return self.env.info().get("map_size") // 1e6
 # =============  定义 collate_fn
 
 def make_collate_fn(news_store, step_len, dim_news=1024):
@@ -424,3 +428,34 @@ def make_collate_fn(news_store, step_len, dim_news=1024):
         feat = torch.cat([price_feats, news_feats], dim=-1)  # (N, T, Dq+Dn)
         return feat                                           # 直接返回输入张量；标签照旧在 DatasetH 内部
     return collate_fn
+
+# Dataset
+
+# dataset_wrapper.py
+
+
+class IndexedSeqDataset(torch.utils.data.Dataset):
+    """
+    Wrap a TSDatasetH/TSDataSampler to also return (instrument, datetime_seq).
+    """
+    def __init__(self, tsds: TSDatasetH):
+        self.ds = tsds         # tsds[idx] -> (step_len, Dq)
+        self.step_len = tsds.step_len
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        # 量价特征 (T, Dq)
+        price_feat = self.ds[idx]
+
+        # --- 取 instrument & datetime 序列 -----------------------
+        i, j = self.ds._get_row_col(idx)          # 行、列索引
+        #   rows 覆盖 step_len 个历史时点；不足时头部用 None 占位
+        rows = list(range(max(i - self.step_len + 1, 0), i + 1))
+        rows = [None]*(self.step_len-len(rows)) + rows  # 左侧 pad
+        dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
+        inst = self.ds.idx_df.columns[j]
+        # -------------------------------------------------------
+
+        return inst, dts, torch.tensor(price_feat)    # (T, Dq)
