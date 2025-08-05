@@ -422,27 +422,24 @@ def make_collate_fn(news_store, step_len, dim_news=1024):
             news, m = _fetch_news_seq(news_store, ins, dts, dim_news)
             news_list.append(news)
             mask_list.append(m)
-        news   = torch.stack(news_list)                # (B, N, T, Dn)
-        n_mask = torch.stack(mask_list)                # (B, N, T)  BoolTensor
+        news   = torch.stack(news_list)                # (N, T, Dn)
+        n_mask = torch.stack(mask_list)                # ( N, T)  BoolTensor
         # 过滤掉一条新闻都没有的股票
-        # 
-        B, N, T, D = price.shape
+        N, T, D = price.shape
         D_n = news.shape[-1]
-        price_flat = price.view(B * N, T, D)
-        news_flat = news.view(B * N, T, D_n)
-        mask_flat = n_mask.view(B * N, T)
-        valid_flat = ~(mask_flat.all(dim=-1))  # shape: [N]，True 表示这条样本“有有效新闻”
+        valid_flat = ~(n_mask.all(dim=-1))  # shape: [N]，True 表示这条样本“有有效新闻”
         # 过滤掉全为 padding 的样本
-        price_valid = price_flat[valid_flat].view(-1, T, D)  # (N', T, D)
-        news_valid = news_flat[valid_flat].view(-1, T, D_n)    # (N', T, Dn)
-        mask_valid = mask_flat[valid_flat].view(-1, T)    # (N', T)  
+        price_valid = price[valid_flat].view(1, -1, T, D)  # (N', T, D)
+        news_valid = news[valid_flat].view(1, -1, T, D_n)    # (N', T, Dn)
+        mask_valid = n_mask[valid_flat].view(1, -1, T)    # (N', T)  
         feat = torch.cat([price_valid, news_valid], dim=-1)        # (N, T, Dq+Dn)
         return feat, mask_valid   # <-- 多返回一个 mask
     
     return collate_fn
 
 def _fetch_news_seq(store, inst, dts_seq, dim_news):
-    N, T, = len(inst), len(dts_seq[0])
+    # inst     单个 instrument
+    # dts_seq  单个 dts_seq
     vecs, mask = [], []
     if isinstance(inst, list):
         for ins, dts in zip(inst, dts_seq):
@@ -459,9 +456,21 @@ def _fetch_news_seq(store, inst, dts_seq, dim_news):
                     else:
                         vecs.append(val)
                         mask.append(False)
-                        
-    vecs = torch.stack(vecs).reshape(N, T, dim_news)
-    mask = torch.tensor(mask).reshape(N, T)
+    elif isinstance(inst, str):
+        for dt in dts_seq:
+            if dt is None:
+                vecs.append(torch.zeros(dim_news))
+                mask.append(True)           
+            else:
+                val = store._fetch(inst, dt)
+                if val is None: # 新闻数据缺失
+                    vecs.append(torch.zeros(dim_news))
+                    mask.append(True)
+                else:
+                    vecs.append(val)
+                    mask.append(False)                   
+    vecs = torch.stack(vecs)
+    mask = torch.tensor(mask)
     
     return vecs, mask   # (N, T, Dn) , (N, T)
 

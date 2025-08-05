@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.data import Sampler
+from torch.utils.data import BatchSampler
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 
 init(autoreset=True)
 
-class DailyBatchSampler(Sampler):
+class DailyBatchSampler(BatchSampler):
     """
     Yield all rows of the same trading day as one batch,
     independent of the index sort order.
@@ -55,7 +55,7 @@ class DailyBatchSampler(Sampler):
             yield np.array(self.groups[dt])
 
     def __len__(self):
-        return len(self.data_source)
+        return len(self.order)
 
 
 class GRUNDCG(Model):

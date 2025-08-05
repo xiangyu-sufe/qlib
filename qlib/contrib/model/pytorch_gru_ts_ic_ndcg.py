@@ -416,15 +416,13 @@ class GRUNDCG(Model):
 
         train_loader = DataLoader(
             ConcatDataset(dl_train, wl_train),
-            sampler=sampler_train,
+            batch_sampler=sampler_train,
             num_workers=self.n_jobs,
-            drop_last=True,
         )
         valid_loader = DataLoader(
             ConcatDataset(dl_valid, wl_valid),
-            sampler=sampler_valid,
+            batch_sampler=sampler_train,
             num_workers=self.n_jobs,
-            drop_last=True,
         )
 
         save_path = get_or_create_path(save_path)

@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.data.sampler import Sampler
+from torch.utils.data.sampler import Sampler, BatchSampler
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
@@ -60,7 +60,7 @@ import os
 #         return len(self.data_source)
     
     
-class DailyBatchSampler(Sampler):
+class DailyBatchSampler(BatchSampler):
     """
     Yield all rows of the same trading day as one batch,
     independent of the index sort order.
@@ -80,7 +80,7 @@ class DailyBatchSampler(Sampler):
             yield np.array(self.groups[dt])
 
     def __len__(self):
-        return len(self.data_source)
+        return len(self.order)
     
 
 class MIGA(Model):
@@ -250,6 +250,7 @@ class MIGA(Model):
         # 定义 MIGA 新闻模型
         self.MIGA_model = MIGANewsModel(
             input_dim=self.d_feat,
+            d_gru=self.hidden_size,
             news_dim=1024,
             num_groups=self.num_groups,
             num_experts_per_group=self.num_experts_per_group,
@@ -455,7 +456,7 @@ class MIGA(Model):
         # daily batch sampler
         sampler_train = DailyBatchSampler(dl_train)
         sampler_valid = DailyBatchSampler(dl_valid)
-        # index 下
+    
         dl_train = IndexedSeqDataset(dl_train)
         dl_valid = IndexedSeqDataset(dl_valid)
 
@@ -470,17 +471,15 @@ class MIGA(Model):
 
         train_loader = DataLoader(
             dl_train,
-            sampler=sampler_train,
+            batch_sampler=sampler_train,
             num_workers=self.n_jobs,
             collate_fn=make_collate_fn(self.news_store, self.step_len),
-            drop_last=True,
         )
         valid_loader = DataLoader(
             dl_valid,
-            sampler=sampler_valid,
+            batch_sampler=sampler_valid,
             num_workers=self.n_jobs,
             collate_fn=make_collate_fn(self.news_store, self.step_len),
-            drop_last=True,
         )
 
         save_path = get_or_create_path(save_path)
@@ -860,6 +859,7 @@ class MIGANewsModel(nn.Module):
     def __init__(
         self,
         input_dim: int,
+        d_gru: int,
         news_dim: int = 1024,
         num_groups: int = 4,
         num_experts_per_group: int = 4,
@@ -870,6 +870,7 @@ class MIGANewsModel(nn.Module):
     ):
         super().__init__()
         self.input_dim = input_dim
+        self.d_gru = d_gru
         self.news_dim = news_dim
         self.num_groups = num_groups
         self.num_experts_per_group = num_experts_per_group
@@ -880,7 +881,7 @@ class MIGANewsModel(nn.Module):
         self.batch_norm = nn.BatchNorm1d(1)
         # Router
         self.router = router 
-        self.hidden_to_gate = nn.Linear(self.hidden_dim, self.num_groups * self.num_experts_per_group)
+        self.hidden_to_gate = nn.Linear(self.d_gru, self.hidden_dim)
 
         # Expert groups
         self.expert_groups = nn.ModuleList([
@@ -915,7 +916,8 @@ class MIGANewsModel(nn.Module):
 
         # Get router outputs - only hidden representations
         hidden_representations = self.router(price_feature, news_feature, news_mask)  # [N, hidden_dim]
-
+        # 降维
+        hidden_representations = self.hidden_to_gate(hidden_representations)
         # Select top-k dimensions/features from hidden representations
         top_k_values, top_k_indices = torch.topk(hidden_representations, self.top_k, dim=1)  # [N, k]
 
