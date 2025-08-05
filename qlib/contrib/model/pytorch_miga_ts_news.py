@@ -8,6 +8,8 @@ from collections import defaultdict
 import warnings
 from typing import Dict, List, Tuple, Optional, DefaultDict
 
+import sys
+import logging
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
@@ -122,9 +124,13 @@ class MIGA(Model):
         **kwargs,
     ):
         # Set logger.
-        self.logger = get_module_logger("GRU")
-        self.logger.info("GRU pytorch version...")
-        
+        self.logger = get_module_logger("MIGA News")
+        self.logger.info("MIGA News pytorch version...")
+        if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.INFO)
+            self.logger.addHandler(handler)
+        self.logger.info("MIGA News pytorch version...")        
         # set hyper-parameters.
         self.d_feat = d_feat
         self.hidden_size = hidden_size

@@ -421,7 +421,7 @@ class GRUNDCG(Model):
         )
         valid_loader = DataLoader(
             ConcatDataset(dl_valid, wl_valid),
-            batch_sampler=sampler_train,
+            batch_sampler=sampler_valid,
             num_workers=self.n_jobs,
         )
 
