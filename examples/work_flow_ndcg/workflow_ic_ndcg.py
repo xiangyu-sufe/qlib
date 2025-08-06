@@ -165,7 +165,7 @@ if __name__ == "__main__":
                     "hidden_size": 64,
                     "num_layers": 2,
                     "dropout": 0.0,
-                    "n_epochs": 50,
+                    "n_epochs": 20,
                     "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,
