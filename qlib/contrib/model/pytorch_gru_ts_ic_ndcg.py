@@ -269,7 +269,7 @@ class GRUNDCG(Model):
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
 
-        for i, (data, weight) in tqdm(enumerate(data_loader)):
+        for i, (data, weight) in enumerate(data_loader):
             if i <= self.step_len:
                 # warm up
                 continue
@@ -465,7 +465,7 @@ class GRUNDCG(Model):
         self.logger.info("training...")
         self.fitted = True
 
-        for step in tqdm(range(self.n_epochs)):
+        for step in range(self.n_epochs):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
             result = self.train_epoch(train_loader) 
