@@ -18,6 +18,7 @@ dist/
 *.log
 db*
 *.json
+*.pt
 .env
 .vim
 .nvimrc

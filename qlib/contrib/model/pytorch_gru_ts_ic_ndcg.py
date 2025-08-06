@@ -277,7 +277,8 @@ class GRUNDCG(Model):
     def train_epoch(self, data_loader):
         self.GRU_model.train()
         # Debug模式下记录每个batch的梯度信息
-        result = defaultdict(lambda : np.nan)
+        result = defaultdict(list)
+        result_agg = defaultdict(lambda : np.nan)
         if self.debug:
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
@@ -288,8 +289,8 @@ class GRUNDCG(Model):
                 continue
                 
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:-1].to(self.device)
-            label = data[:, -1, -1].to(self.device)
+            feature = data[:, :, 0:self.d_feat].to(self.device)
+            label = data[:, -1, self.d_feat].to(self.device)
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
@@ -336,15 +337,15 @@ class GRUNDCG(Model):
             pred.backward(lambda_grads)                
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
             # 手动更新梯度
-            self.logger.debug(f"\n 手动更新梯度")
-            with torch.no_grad():
-                lr = self.train_optimizer.param_groups[0]['lr']
-                for p in self.GRU_model.parameters():
-                    if p.grad is not None:
-                        p.data -= lr * p.grad
+            # self.logger.debug(f"\n 手动更新梯度")
+            # with torch.no_grad():
+            #     lr = self.train_optimizer.param_groups[0]['lr']
+            #     for p in self.GRU_model.parameters():
+            #         if p.grad is not None:
+            #             p.data -= lr * p.grad
             # 优化器更新梯度
-            self.logger.debug(f"\n 优化器{self.optimizer}更新梯度")
-            # self.train_optimizer.step()
+            # self.logger.debug(f"\n 优化器{self.optimizer}更新梯度")
+            self.train_optimizer.step()
             # 更新完后记录下梯度
             if self.debug:
                 grad_norm = compute_grad_norm(self.GRU_model)
@@ -365,7 +366,7 @@ class GRUNDCG(Model):
                 # print(f"Layer Grad Norms: {layer_info}")
             # 计算一些指标
             for name in self.display_list:
-                result['train_'+name] = self.metric_fn(pred, label, name = name)
+                result['train_'+name].append(self.metric_fn(pred, label, name = name))
             
 
         # Debug模式下记录梯度信息
@@ -388,18 +389,22 @@ class GRUNDCG(Model):
                     print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}, \
                           Epoch Avg {layer_name} Grad Norm: Ratio: {avg_layer_norm/avg_grad_norm:.6f}")
 
-        return result
+        for name in self.display_list:
+            result_agg['train_'+name] = np.mean(result['train_'+name])
+        
+        return result_agg
     
     
     @timing
     def test_epoch(self, data_loader):
         self.GRU_model.eval()
-
+        result = defaultdict(list)
+        result_agg = defaultdict(lambda : np.nan)
         for data, weight in data_loader:
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:-1].to(self.device)
+            feature = data[:, :, :self.d_feat].to(self.device)
             # feature[torch.isnan(feature)] = 0
-            label = data[:, -1, -1].to(self.device)
+            label = data[:, -1, self.d_feat].to(self.device)
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
@@ -414,11 +419,13 @@ class GRUNDCG(Model):
                 # 计算NDCG
                 score = calculate_ndcg_optimized(label, pred, self.n_layer, self.linear_ndcg)
 
-        result = defaultdict(lambda : np.nan)
+            for name in self.display_list:
+                result['val_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
+        
         for name in self.display_list:
-            result['val_'+name] = self.metric_fn(pred.detach(), label.detach(), name = name)
-
-        return result
+            result_agg['val_'+name] = np.mean(result['val_'+name])
+        
+        return result_agg
     
     def fit(
         self,
@@ -460,7 +467,7 @@ class GRUNDCG(Model):
             num_workers=self.n_jobs,
         )
 
-        save_path = get_or_create_path(save_path)
+        save_path = get_or_create_path(self.save_path)
 
         stop_steps = 0
         train_loss = 0
@@ -515,7 +522,7 @@ class GRUNDCG(Model):
 
         self.logger.info("best score: %.6lf @ %d" % (best_score, best_epoch))
         self.GRU_model.load_state_dict(best_param)
-        torch.save(best_param, save_path)
+        torch.save(best_param, os.path.join(save_path, 'model.pt'))
 
         if self.use_gpu:
             torch.cuda.empty_cache()
@@ -537,9 +544,12 @@ class GRUNDCG(Model):
 
         for data in test_loader:
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:-1].to(self.device)
+            feature = data[:, :, :self.d_feat].to(self.device)
             if self.ohlc:
-                feature = process_ohlc_minmax(feature)
+                feature = process_ohlc(feature)
+                feature = process_ohlc_batchwinsor(feature)
+                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_inf_nan_fill0(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float()).detach().cpu().numpy()
 
