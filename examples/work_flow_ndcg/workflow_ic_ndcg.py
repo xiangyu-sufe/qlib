@@ -54,11 +54,14 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--metric", type=str, default="ic", help="Metric")
     parser.add_argument("--loss", type=str, default="ic", help="Loss")
+    parser.add_argument("--step_len", type=int, default=20, )
 
+    # 特有参数
     parser.add_argument("--sigma", type=float, default=3.03)
     parser.add_argument("--combine_type", type=str, default="null", ) # 需要设置
-    parser.add_argument("--weight", type=float, default=0.7, )
-    parser.add_argument("--step_len", type=int, default=20, )
+    parser.add_argument("--weight", type=float, default=0.7, help="Weight for IC loss")
+    parser.add_argument("--linear_ndcg", action="store_true", default=False, help="Linear NDCG")
+    parser.add_argument("--n_layer", type=int, default=10, )
     
     args = parser.parse_args()
     save_path = args.save_path
@@ -181,11 +184,11 @@ if __name__ == "__main__":
                     "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,
                     "sigma": args.sigma,
-                    "n_layer": 5,
+                    "n_layer": args.n_layer,
                     "weight": args.weight,
-                    "linear_ndcg": False,
+                    "linear_ndcg": args.linear_ndcg,
                     "combine_type":args.combine_type,
-                    "debug": True,  # Set to True for debugging mode
+                    "debug": args.debug,  # Set to True for debugging mode
                     "save_path": f"{save_path}/task_{task_id}",
                     "step_len": args.step_len,
                     "ohlc": args.ohlc,
