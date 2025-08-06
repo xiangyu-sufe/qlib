@@ -33,13 +33,13 @@ from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.ndcg import (compute_lambda_gradients, calculate_ndcg_optimized, ranknet_cross_entropy_loss,
                          compute_delta_ndcg)
-from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss
+from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss, topk_return
 from qlib.utils.color import *
 from qlib.utils.hxy_utils import (
     compute_grad_norm, compute_layerwise_grad_norm, process_ohlc,
     apply_mask_preserve_norm, process_ohlc_batchnorm, scale_preserve_sign_torch,
     process_ohlc_minmax, process_ohlc_inf_nan_fill0, process_ohlc_batchwinsor,
-    visualize_evals_result_general,
+    visualize_evals_result_general, 
 )
 from qlib.utils.timing import timing
 from colorama import Fore, Style, init
@@ -111,7 +111,7 @@ class GRUNDCG(Model):
         weight=0.7,
         combine_type='mult',
         ohlc=False,
-        display_list=['loss', 'ic', 'rankic', 'ndcg'],
+        display_list=['loss', 'ic', 'rankic', 'ndcg', 'topk_return'],
         **kwargs,
     ):
         # Set logger.
@@ -250,7 +250,7 @@ class GRUNDCG(Model):
     def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label) 
 
-        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic", "ndcg"):
+        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic", "ndcg", "topk_return"):
             if name == "ic":
                 return -ic_loss(pred[mask], label[mask]).item()
             elif name == "rankic":
@@ -269,6 +269,8 @@ class GRUNDCG(Model):
                 return -self.loss_fn(pred[mask], label[mask]).item()
             elif name == "ndcg":
                 return calculate_ndcg_optimized(label[mask], pred[mask], self.n_layer, linear=self.linear_ndcg).item()
+            elif name == "topk_return":
+                return topk_return(pred[mask], label[mask], k=self.n_layer).item()
 
         raise ValueError("unknown metric `%s`" % name)
     

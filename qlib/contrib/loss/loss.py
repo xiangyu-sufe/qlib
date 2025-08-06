@@ -63,9 +63,40 @@ def rankic_loss(pred, label):
     label_rank = rank_data(label)
     return -torch.corrcoef(torch.stack((pred_rank, label_rank), dim=0))[0, 1]
 
-def topk_return(pred, label, k=10):
+def topk_return(pred: torch.Tensor, label: torch.Tensor, k: int = 10):
+    """
+    计算预测值 pred 在 top 1/k 分位上的平均真实收益率（label）减去总体平均收益率。
+
+    Parameters
+    ----------
+    pred : torch.Tensor
+        预测值，形状为 [N]
+    label : torch.Tensor
+        实际收益率，形状为 [N]
+    k : int
+        分层数，默认 top 1/k，即 top 10%
+
+    Returns
+    -------
+    excess_return : float
+        top-k 层的平均收益率 - 全市场平均收益率
+    """
+    if pred.ndim != 1 or label.ndim != 1:
+        raise ValueError("pred 和 label 应为一维张量")
+
+    N = pred.shape[0]
+    topk_num = max(1, int(N / k))
+
+    # 获取 top-k 样本的索引
+    _, topk_idx = torch.topk(pred, topk_num)
+
+    # 平均收益率计算
+    topk_mean_return = label[topk_idx].mean()
+    market_mean_return = label.mean()
+
+    excess_return = topk_mean_return - market_mean_return
     
-    ...
+    return excess_return
 
 def topk_ic_loss(pred, label, k=10):
     """
