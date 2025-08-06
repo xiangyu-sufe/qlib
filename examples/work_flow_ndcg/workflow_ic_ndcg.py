@@ -31,6 +31,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # 控制流参数
     parser.add_argument("--debug", action="store_true", default=False, help="Debug mode")
+    parser.add_argument("--save_path", type=str, default=".")
     # 数据参数
     parser.add_argument("--onlyrun_task_id", type=int, nargs='+', default=None, help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
@@ -43,7 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=240, help="Test dataset length")
-
+    
     # 时间范围参数
     parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
@@ -51,7 +52,9 @@ if __name__ == "__main__":
     parser.add_argument("--n_epochs", type=int, default=20, help="Number of epochs")
     parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
-    parser.add_argument("--save_path", type=str, default=".")
+    parser.add_argument("--metric", type=str, default="ic", help="Metric")
+    parser.add_argument("--loss", type=str, default="ic", help="Loss")
+
     parser.add_argument("--sigma", type=float, default=3.03)
     parser.add_argument("--combine_type", type=str, default="null", ) # 需要设置
     parser.add_argument("--weight", type=float, default=0.7, )
@@ -172,8 +175,8 @@ if __name__ == "__main__":
                     "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,
-                    "metric": "ndcg",
-                    "loss": "ic",
+                    "metric": args.metric,
+                    "loss": args.loss,
                     "n_jobs": 24,
                     "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,

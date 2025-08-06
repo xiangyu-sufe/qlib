@@ -576,6 +576,8 @@ class GRUModel(nn.Module):
 
     def forward(self, x):
         x = x.squeeze()  # remove the time dimension
+        if torch.isnan(x).any():
+            raise ValueError("GRU input contains NaN values")
         out, _ = self.rnn(x)
         if torch.isnan(out).any():
             raise ValueError("GRU output contains NaN values")
