@@ -32,7 +32,7 @@ if __name__ == "__main__":
     # 控制流参数
     parser.add_argument("--debug", action="store_true", default=False, help="Debug mode")
     # 数据参数
-    parser.add_argument("--onlyrun_task_id", type=int, nargs='+', default=[0], help="Only run task id")
+    parser.add_argument("--onlyrun_task_id", type=int, nargs='+', default=None, help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
