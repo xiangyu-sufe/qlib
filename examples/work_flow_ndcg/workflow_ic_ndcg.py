@@ -25,11 +25,13 @@ import pandas as pd
 import os
 import time
 if __name__ == "__main__":
-    # 数据参数
+    
     import argparse
 
     parser = argparse.ArgumentParser()
-
+    # 控制流参数
+    parser.add_argument("--debug", action="store_true", default=False, help="Debug mode")
+    # 数据参数
     parser.add_argument("--onlyrun_task_id", type=int, nargs='+', default=[0], help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
@@ -43,9 +45,10 @@ if __name__ == "__main__":
     parser.add_argument("--test_length", type=int, default=240, help="Test dataset length")
 
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2020-12-31", help="Start time for data")
+    parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
+    parser.add_argument("--n_epochs", type=int, default=20, help="Number of epochs")
     parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
@@ -84,11 +87,11 @@ if __name__ == "__main__":
                 {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
                 # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
                 # {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
-                {"class": "FillnaOHLC", 
-                 "kwargs": {
-                     'fields_group': ("feature", ["open", "high", "low", "close", "volume", "vwap"]),
-                    }
-                 },
+                # {"class": "FillnaOHLC", 
+                #  "kwargs": {
+                #      'fields_group': ("feature", ["open", "high", "low", "close", "volume", "vwap"]),
+                #     }
+                #  },
             ]
             
             # 不用处理
@@ -165,7 +168,7 @@ if __name__ == "__main__":
                     "hidden_size": 64,
                     "num_layers": 2,
                     "dropout": 0.0,
-                    "n_epochs": 20,
+                    "n_epochs": args.n_epochs,
                     "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,

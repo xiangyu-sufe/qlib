@@ -11,7 +11,7 @@ import tqdm
 import pickle
 import torch
 from qlib.data.dataset import TSDatasetH   # 已在 sys.path 中
-
+import matplotlib.pyplot as plt
 
 
 root_dir = os.path.expanduser("~")
@@ -577,7 +577,18 @@ class IndexedSeqDataset(torch.utils.data.Dataset):
         
     
 # =============== 
-
+def process_volume_winsor(data: torch.Tensor, N = 5):
+    """
+        对成交量进行 winsorize
+    """
+    volume = data[:, :, 5]
+    med = torch.nanmedian(volume)
+    mad = torch.nanmedian(torch.abs(volume - med))  
+    volume = torch.clip(volume, med - N * mad, med + N * mad)
+    data[:, :, 5] = volume
+    
+    return data
+    
 def process_ohlc(ohlc: torch.Tensor):
     # ohlc N, T, 6
     # 最后一列为 volume
@@ -591,6 +602,76 @@ def process_ohlc(ohlc: torch.Tensor):
     ohlc[:, :, 5] = ohlc[:, :, 5] / ohlc[:, -1:, 5] 
     
     return ohlc
+
+# def process_ohlc_batchwinsor(data: torch.Tensor):
+#     # ohlc: (N, T, 6)
+#     ohlc = data[:, :, :6]  # N, T, 6
+#     med = torch.nanmedian(volume)
+#     mad = torch.nanmedian(torch.abs(volume - med))  
+#     volume = torch.clip(volume, med - N * mad, med + N * mad)
+#     data[:, :, 5] = volume
+    
+#     return data    
+
+def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
+    """
+    对 OHLC 的 6 个特征做全局 MAD winsorize，纯向量化实现，无for循环
+    输入:
+      data: (N, T, 6)
+    返回:
+      winsorize 后的 data，形状不变
+    """
+    N_batch, T, D = data.shape
+    assert D >= 6, "输入特征维度应≥6"
+    out = data.clone()
+    reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
+    
+    medians = torch.nanmedian(reshaped, dim=0).values  # (6,)
+    abs_dev = torch.abs(reshaped - medians)
+    mads = torch.nanmedian(abs_dev, dim=0).values  # (6,)
+
+    lower = medians - N * mads
+    upper = medians + N * mads
+
+    # 广播 clip
+    clipped = torch.clamp(reshaped, lower, upper)
+    
+    out[:, :, :6] = clipped.reshape(N_batch, T, 6)
+
+    return out
+    
+def torch_nanstd(o, dim, keepdim=False):
+    # 计算均值
+    mean = torch.nanmean(o, dim=dim, keepdim=True)
+    # 计算平方差的均值并开方
+    result = torch.sqrt(torch.nanmean(torch.pow(o - mean, 2), dim=dim, keepdim=keepdim))
+    return result
+
+def process_ohlc_batchnorm(data: torch.Tensor):
+    N_batch, T, D = data.shape
+    assert D >= 6, "输入特征维度应≥6"
+
+    out = data.clone()
+    reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
+    
+    mean = torch.nanmean(reshaped, dim=0)
+    std = torch_nanstd(reshaped, dim=0)
+    
+    # 标准化处理并重塑回原始形状
+    normalized = (reshaped - mean) / std
+    out[:, :, :6] = normalized.reshape(N_batch, T, 6)
+    
+    return out
+
+def process_ohlc_inf_nan_fill0(data: torch.Tensor):
+    # ohlc: (N, T, 6)
+    
+    ohlc = data[:, :, :6]
+    ohlc[torch.isinf(ohlc)] = torch.nan
+    ohlc[torch.isnan(ohlc)] = 0
+    data[:, :, :6] = ohlc
+    
+    return data
 
 def process_ohlc_minmax(data: torch.Tensor):
     # ohlc: (N, T, 6)
@@ -610,3 +691,112 @@ def process_ohlc_minmax(data: torch.Tensor):
         (ohlc - min_exp) / denom_exp
     )
     return ohlc
+
+# ========================================= 可视化曲线部分
+
+def visualize_evals_result_general(
+    evals_result,
+    epochs,
+    best_epoch,
+    train_index=None,
+    val_index=None,
+    save_path=None,
+    logger=None,
+):
+    """
+    可视化多指标的训练和验证曲线。
+
+    参数
+    ----
+    evals_result : dict
+        {
+            "train": {"loss": [...], "ndcg": [...], ...},
+            "valid": {"loss": [...], "ndcg": [...], ...},
+        }
+    epochs : list or array-like
+        横坐标 epoch 序列，长度应与每个指标的记录值一致
+    train_index / val_index : pd.Index or 类似结构
+        用于生成时间区间字符串
+    save_path : str
+        图片保存路径目录
+    logger : logging.Logger
+        可选的日志记录器
+    """
+    def _get_time_range(index):
+        if index is None:
+            return "N/A"
+        if hasattr(index, "get_level_values"):
+            try:
+                dates = index.get_level_values("datetime")
+            except Exception:
+                dates = index
+        else:
+            dates = index
+        if len(dates) == 0:
+            return "N/A"
+        return f"{str(min(dates))[:10]} ~ {str(max(dates))[:10]}"
+
+    if logger:
+        logger.info("Visualizing evals result...")
+        logger.info(f"Save path: {save_path}")
+
+    train_metrics = evals_result.get("train", {})
+    valid_metrics = evals_result.get("valid", {})
+
+    all_metrics = sorted(set(train_metrics.keys()) | set(valid_metrics.keys()))
+
+    for metric_name in all_metrics:
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        train_curve = train_metrics.get(metric_name, [])
+        valid_curve = valid_metrics.get(metric_name, [])
+
+        if train_curve:
+            ax.plot(epochs[:len(train_curve)], train_curve, label="Train", color='blue', linewidth=2)
+        if valid_curve:
+            ax.plot(epochs[:len(valid_curve)], valid_curve, label="Valid", color='red', linewidth=2)
+
+        # 标注 best_epoch
+        if best_epoch is not None and valid_curve:
+            try:
+                idx = epochs.index(best_epoch)
+                ax.scatter(
+                    best_epoch,
+                    valid_curve[idx],
+                    label="Best Epoch",
+                    color='green',
+                    s=100,
+                    zorder=10
+                )
+            except ValueError:
+                pass  # 如果 best_epoch 不在 epochs 中就跳过
+
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(metric_name)
+        ax.set_title(f"{metric_name} - Training vs Validation")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 时间信息
+        train_range = _get_time_range(train_index)
+        val_range = _get_time_range(val_index)
+        time_info = f"Train: {train_range}  |  Valid: {val_range}"
+        fig.text(0.5, 0.02, time_info, ha='center', va='bottom', fontsize=10,
+                 bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
+
+        # 标题含最佳点信息
+        if best_epoch is not None:
+            title_info = f"Best Epoch: {best_epoch}"
+            if valid_curve and idx < len(valid_curve):
+                title_info += f" ({metric_name}: {valid_curve[idx]:.4f})"
+            fig.suptitle(title_info, fontsize=14, y=0.97)
+
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            fig.savefig(
+                os.path.join(save_path, f"{metric_name}_curve.png"),
+                dpi=300,
+                bbox_inches="tight"
+            )
+
+        plt.close()
