@@ -63,6 +63,10 @@ def rankic_loss(pred, label):
     label_rank = rank_data(label)
     return -torch.corrcoef(torch.stack((pred_rank, label_rank), dim=0))[0, 1]
 
+def topk_return(pred, label, k=10):
+    
+    ...
+
 def topk_ic_loss(pred, label, k=10):
     """
     计算预测值和真实标签在预测前 1/k 比例内的 rank IC（Spearman相关）。
