@@ -179,4 +179,4 @@ def compute_lambda(y_true, y_pred, n_layer, sigma=3.03):
     # 梯度缩放系数
     
     # 将真实收益率划分为n_layer层；最高分为n_layer - 1，最低分为0
-    rea
+    ...

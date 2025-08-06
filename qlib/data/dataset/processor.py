@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from qlib.utils.data import robust_zscore, zscore
+from qlib.utils.timing import timing
 from ...constant import EPS
 from .utils import fetch_df_by_index
 from ...utils.serial import Serializable
@@ -206,6 +207,7 @@ class Fillna(Processor):
         self.fields_group = fields_group
         self.fill_value = fill_value
 
+    @timing
     def __call__(self, df):
         if self.fields_group is None:
             df.fillna(self.fill_value, inplace=True)
@@ -213,6 +215,29 @@ class Fillna(Processor):
             # this implementation is extremely slow
             # df.fillna({col: self.fill_value for col in cols}, inplace=True)
             df[self.fields_group] = df[self.fields_group].fillna(self.fill_value)
+        return df
+
+class FillnaOHLC(Processor):
+    """Process NaN for ohlcvv"""
+    
+    def __init__(self, fields_group=None):
+        self.fields_group = fields_group
+        
+    @timing
+    def __call__(self, df):
+        if self.fields_group is None:
+            df = df.groupby(level="instrument", group_keys=False).fillna(method="ffill")
+            df = df.groupby(level="instrument", group_keys=False).fillna(method="bfill")
+        else:
+            if isinstance(self.fields_group, tuple):
+                idx = pd.IndexSlice      
+                l, r = self.fields_group          
+                df.loc[:, idx[l,r]] = df.loc[:,idx[l,r]].groupby(level="instrument", group_keys=False).ffill()
+                df.loc[:, idx[l,r]] = df.loc[:,idx[l,r]].groupby(level="instrument", group_keys=False).bfill()
+            else:
+                df[self.fields_group] = df[self.fields_group].groupby(level="instrument", group_keys=False).ffill()
+                df[self.fields_group] = df[self.fields_group].groupby(level="instrument", group_keys=False).bfill()
+
         return df
 
 

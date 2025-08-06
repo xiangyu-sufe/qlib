@@ -73,6 +73,6 @@ class MIGALoss(nn.Module):
         
         return {
             'total_loss': total_loss,
-            'expert_loss': expert_loss,
-            'router_loss': router_loss
+            'expert_loss': expert_loss * self.epsilon,
+            'router_loss': router_loss * self.omega,
         }

@@ -12,6 +12,13 @@ import pickle
 import torch
 from qlib.data.dataset import TSDatasetH   # 已在 sys.path 中
 
+
+
+root_dir = os.path.expanduser("~")
+
+calendar_path =  f"{root_dir}/GRU/alphamat/20250625/data/calendars/day.csv"
+calendar = pd.read_csv(calendar_path)
+
 def compute_grad_norm(model):
     """
         计算模型整体的梯度范数
@@ -57,11 +64,46 @@ def get_label(dataset, segment = "test"):
     获取与预测结果对齐的标签 DataFrame
     """
     handler = dataset.handler
-    start, end = dataset.segments[segment]
-    
-    label_data = handler._infer.loc[slice(start, end), "label"]
-        
+    start, end = dataset.segments[segment]                
+    if segment in ('train', 'valid'):
+        label_data = handler._learn.loc[slice(start, end), "label"]
+    elif segment in ('test'):
+        label_data = handler._infer.loc[slice(start, end), "label"]
+    else:
+        raise ValueError("segment must be 'train', 'valid' or 'test'")    
     return label_data
+
+
+
+
+def is_month_end_trade_day(date):
+    """
+    检查 date 是否为 calendar 中的月末交易日，如果不是则返回最近的月末交易日。
+    Args:
+        date: str, datetime, pd.Timestamp
+    Returns:
+        pd.Timestamp: 月末交易日
+        bool: 是否本来就是月末交易日
+    """
+    cal = pd.to_datetime(calendar['date'])
+    cal = pd.DatetimeIndex(cal)
+    dt = pd.to_datetime(date)
+    # 修正：用 cal.to_series() 作为 groupby 的对象
+    month_ends = cal.to_series().groupby([cal.year, cal.month]).max().sort_values()
+    is_month_end = dt in month_ends.values
+    if is_month_end:
+        return dt, True
+    year, month = dt.year, dt.month
+    print(f"{date} 不是月末交易日，返回最近的月末交易日")
+    try:
+        month_end = month_ends.loc[(year, month)]
+    except KeyError:
+        if dt < cal[0]:
+            month_end = month_ends.iloc[0]
+        else:
+            month_end = month_ends.iloc[-1]
+    return month_end, False
+
 
 def load_calendar(path,freq,start_time='',end_time=''):
     '''
@@ -357,7 +399,17 @@ def read_alpha64():
     df.sort_index(inplace=True)
     
     return df
+
+def read_ohlc():
+    root_dir = os.path.expanduser('~')
+    df = pd.read_pickle(f'{root_dir}/GRU/Data/pv1day/qlib/ohlc.pkl')
+    df.columns = df.columns.str.replace(r'\..*$', '', regex=True)
+    # 处理股票代码
+    df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
+    df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)
+    df.sort_index(inplace=True)
     
+    return df
     
 def read_minute():
     # 读取自有alpha64 数据
@@ -425,13 +477,17 @@ def make_collate_fn(news_store, step_len, dim_news=1024):
         news   = torch.stack(news_list)                # (N, T, Dn)
         n_mask = torch.stack(mask_list)                # ( N, T)  BoolTensor
         # 过滤掉一条新闻都没有的股票
-        N, T, D = price.shape
-        D_n = news.shape[-1]
-        valid_flat = ~(n_mask.all(dim=-1))  # shape: [N]，True 表示这条样本“有有效新闻”
-        # 过滤掉全为 padding 的样本
-        price_valid = price[valid_flat].view(1, -1, T, D)  # (N', T, D)
-        news_valid = news[valid_flat].view(1, -1, T, D_n)    # (N', T, Dn)
-        mask_valid = n_mask[valid_flat].view(1, -1, T)    # (N', T)  
+        # N, T, D = price.shape
+        # D_n = news.shape[-1]
+        # valid_flat = ~(n_mask.all(dim=-1))  # shape: [N]，True 表示这条样本“有有效新闻”
+        # price_valid = price[valid_flat].view(1, -1, T, D)  # (N', T, D)
+        # news_valid = news[valid_flat].view(1, -1, T, D_n)    # (N', T, Dn)
+        # mask_valid = n_mask[valid_flat].view(1, -1, T)    # (N', T)  
+        
+        # 不过滤
+        price_valid = price
+        news_valid = news 
+        mask_valid = n_mask 
         feat = torch.cat([price_valid, news_valid], dim=-1)        # (N, T, Dq+Dn)
         return feat, mask_valid   # <-- 多返回一个 mask
     
@@ -517,3 +573,23 @@ class IndexedSeqDataset(torch.utils.data.Dataset):
             dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
             inst = self.ds.idx_df.columns[j]
             return inst, dts, torch.tensor(price_feat)
+        
+        
+    
+# =============== 
+
+def process_ohlc(ohlc: torch.Tensor):
+    # ohlc N, T, 6
+    # 最后一列为 volume
+            # data_ar[:, :5, :] = data_ar[:, :5, :] / data_ar[:, :1, -1:]
+
+        # data_ar[:, 5, :] = data_ar[:, 5, :] / data_ar[:, 5, -1:]
+
+
+        # self.data_arr[:, :self.step_len * self.feat_num] = data_ar.reshape((-1, self.feat_num * self.step_len))
+    ohlc[:, :, :5] = ohlc[:, :, :5] / ohlc[:, -1:, :1]
+    ohlc[:, :, 5] = ohlc[:, :, 5] / ohlc[:, -1:, 5] 
+    
+    return ohlc
+
+

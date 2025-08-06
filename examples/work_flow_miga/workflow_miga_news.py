@@ -44,10 +44,10 @@ if __name__ == "__main__":
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
 
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2024-9-30", help="Start time for data")
-    parser.add_argument("--end_time", type=str, default="2025-05-30", help="End time for data")
+    parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
+    parser.add_argument("--end_time", type=str, default="2024-09-30", help="End time for data")
     # 模型一般参数
-    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--lambda_reg", type=float, default=1)
     # MIGA模型结构参数
@@ -55,13 +55,14 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_dim", type=int, default=64, help="Hidden dimension for router (auto-calculated as num_groups * num_experts_per_group if not specified)")
     parser.add_argument("--num_groups", type=int, default=4, help="Number of expert groups")
     parser.add_argument("--num_experts_per_group", type=int, default=4, help="Number of experts per group")
-    parser.add_argument("--num_heads", type=int, default=2, help="Number of attention heads")
+    parser.add_argument("--num_heads", type=int, default=1, help="Number of attention heads")
     parser.add_argument("--top_k", type=int, default=4, help="Top-k experts selection")
     parser.add_argument("--expert_output_dim", type=int, default=1, help="Expert output dimension")
     parser.add_argument("--num_layers", type=int, default=2, help="Number of layers")
     parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate")
+    parser.add_argument("--use_news", action="store_true", help="是否使用新闻数据")
     # MIGA损失函数参数
-    parser.add_argument("--omega", type=float, default=2e-3, help="Router loss weight")
+    parser.add_argument("--omega", type=float, default=2e-2, help="Router loss weight")
     parser.add_argument("--epsilon", type=float, default=1.0, help="Expert loss weight")
     parser.add_argument("--omega_scheduler", type=str, default="exp", choices=["none", "exp", "step"], help="omega动态调整策略: none/exp/step")
     parser.add_argument("--omega_decay", type=float, default=0.96, help="指数衰减率（exp模式）")
@@ -164,14 +165,14 @@ if __name__ == "__main__":
                 "kwargs": {
                     "d_feat": 64, # 模型参数
                     "hidden_size": 64,
-                    "num_groups": 2,
+                    "num_groups": 4,
                     "num_experts_per_group": 4,
-                    "num_heads": 4,
+                    "num_heads": 1,
                     "top_k": 4,
                     "expert_output_dim": 1,
                     "num_layers": 2,
                     "dropout": 0.0,
-                    "n_epochs": 50, # 训练参数
+                    "n_epochs": 20, # 训练参数
                     "batch_size": 5000,
                     "lr": args.lr,
                     "early_stop": 10,
@@ -188,6 +189,7 @@ if __name__ == "__main__":
                     "save_path": save_path,
                     "step_len": args.step_len,
                     "news_store": news_store,
+                    "use_news" : args.use_news
                 },
             },
             "dataset": {
@@ -215,6 +217,21 @@ if __name__ == "__main__":
         model = init_instance_by_config(task["model"])
         dataset = init_instance_by_config(task["dataset"])
         model.fit(dataset)
+        # 在训练集预测
+        score_train = model.predict_train(dataset)
+        score_train.name = 'score'
+        score_train = score_train.to_frame()
+        label_train = get_label(dataset, segment="train")
+        label_train.columns = ["label"]
+        
+        pred_label_train = pd.concat([label_train, score_train], axis=1, sort=True).reindex(label_train.index)
+        fig, = analysis_position.score_ic_graph(pred_label_train, show_notebook=False)
+        # 保存图
+        # fig.savefig(f"{save_path}/score_ic_graph.png")
+        fig, = analysis_position.top_score_ic_graph(pred_label_train, show_notebook=False)
+        # fig.savefig(f"{save_path}/top_score_ic_graph.png")
+        
+        # 在测试集预测
         score = model.predict(dataset)
         score.name = 'score'
         score = score.to_frame()

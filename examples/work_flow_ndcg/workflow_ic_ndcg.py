@@ -8,16 +8,22 @@ Qlib provides two kinds of interfaces.
 The interface of (1) is `qrun XXX.yaml`.  The interface of (2) is script like this, which nearly does the same thing as `qrun XXX.yaml`
 """
 import json
+import sys
 import qlib
 from qlib.constant import REG_CN
 from qlib.contrib.report import analysis_position
 from qlib.utils import init_instance_by_config
-from qlib.utils.hxy_utils import get_label, prepare_task_pool
+from qlib.utils.hxy_utils import (get_label, 
+                                  prepare_task_pool, 
+                                  read_alpha64, 
+                                  read_ohlc,
+                                  read_label,)
 from torch.utils.data import TensorDataset, DataLoader
+from qlib.data.dataset.loader import StaticDataLoader
 import torch
 import pandas as pd
 import os
-
+import time
 if __name__ == "__main__":
     # 数据参数
     import argparse
@@ -29,6 +35,8 @@ if __name__ == "__main__":
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--fake", action="store_true", default=False, help="Fake data")
     parser.add_argument("--gpu", type=int, default=0,)
+    parser.add_argument("--alpha158", action="store_true",  help="Use alpha158 data")
+    parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
@@ -38,12 +46,14 @@ if __name__ == "__main__":
     parser.add_argument("--start_time", type=str, default="2020-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
     # 模型参数
+    parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--sigma", type=float, default=3.03)
     parser.add_argument("--combine_type", type=str, default="null", ) # 需要设置
     parser.add_argument("--weight", type=float, default=0.7, )
     parser.add_argument("--step_len", type=int, default=20, )
+    
     args = parser.parse_args()
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
@@ -51,11 +61,68 @@ if __name__ == "__main__":
 
     root_dir = os.path.expanduser('~')
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
-    provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
-    market = "csiall"
-    benchmark = "SH000905"
 
+    market = None
+    benchmark = "SH000905"
+    if not args.alpha158:
+        # 读取量价数据
+        if args.ohlc:
+            a = time.time()
+            ohlc = read_ohlc()
+            labels = read_label(day=10, method = 'win+neu+zscore')
+            data = ohlc.join(labels, how='left')
+            
+            data.columns = pd.MultiIndex.from_tuples(
+                [('feature', col) for col in ohlc.columns] 
+                + [('label', col) for col in labels.columns]
+                )
+            print("读取所有数据用时: ", time.time() - a)
+            print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
+            # 创建 DataLoader
+            sdl_pkl = StaticDataLoader(config=data)
+            infer_processors = [
+                {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
+                # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+                # {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
+                {"class": "FillnaOHLC", 
+                 "kwargs": {
+                     'fields_group': ("feature", ["open", "high", "low", "close", "volume", "vwap"]),
+                    }
+                 },
+            ]
+            
+            # 不用处理
+            learn_processors = [
+                {"class": "DropnaLabel"},
+            ]
+        else:
+            sys.exit(-1) # we should not reach here 
+    else:
+        provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
+        qlib.init(provider_uri=provider_uri, region=REG_CN)
+        # 数据参数
+        infer_processors = [
+            {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
+            # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+            {"class": "CSZScoreNorm", "kwargs": {"fields_group": "feature", "method": "robust"}},
+            # {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
+            {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
+        ]
+        
+        # 排序学习 label 不用处理
+        learn_processors = [
+            {"class": "DropnaLabel"},
+        ]
+
+        filter_pipe = [
+            {
+                "filter_type": "ExpressionDFilter",
+                "rule_expression": "$volume > 1e-5",
+                "filter_start_time": None,
+                "filter_end_time": None,
+                "keep": False
+            }
+        ]
     task_config = {
         'train': args.train_length,
         'valid': args.valid_length,
@@ -68,29 +135,7 @@ if __name__ == "__main__":
                                         start_time = args.start_time,
                                         end_time = args.end_time)
 
-    # 数据参数
-    infer_processors = [
-        {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-        # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
-        {"class": "CSZScoreNorm", "kwargs": {"fields_group": "feature", "method": "robust"}},
-        # {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature",}},
-        {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
-    ]
-    
-    # 排序学习 label 不用处理
-    learn_processors = [
-        {"class": "DropnaLabel"},
-    ]
 
-    filter_pipe = [
-        {
-            "filter_type": "ExpressionDFilter",
-            "rule_expression": "$volume > 1e-5",
-            "filter_start_time": None,
-            "filter_end_time": None,
-            "keep": False
-        }
-    ]
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
         print(f"开始处理任务 {task_id}")
@@ -110,24 +155,13 @@ if __name__ == "__main__":
         
         print(f"时间范围: 训练({start_time} - {fit_end_time}), 验证({val_start_time} - {val_end_time}), 测试({test_start_time} - {test_end_time})")
 
-        data_handler_config = {
-            "start_time": start_time,
-            "end_time": test_end_time,
-            "fit_start_time": start_time,
-            "fit_end_time": fit_end_time,
-            "instruments": market,
-            "infer_processors":infer_processors,
-            "learn_processors":learn_processors,
-            "drop_raw": True,
-            "filter_pipe": filter_pipe,
-        }   
 
         task = {
             "model": {
                 "class": "GRUNDCG",
                 "module_path": "qlib.contrib.model.pytorch_gru_ts_ic_ndcg",
                 "kwargs": {
-                    "d_feat": 158,
+                    "d_feat": args.d_feat,
                     "hidden_size": 64,
                     "num_layers": 2,
                     "dropout": 0.0,
@@ -146,10 +180,57 @@ if __name__ == "__main__":
                     "linear_ndcg": False,
                     "combine_type":args.combine_type,
                     "debug": True,  # Set to True for debugging mode
-                    "save_path": f"{save_path}/task_{task_id}"
+                    "save_path": f"{save_path}/task_{task_id}",
+                    "step_len": args.step_len,
+                    "ohlc": args.ohlc,
                 },
             },
-            "dataset": {
+        }
+        if not args.alpha158:
+            if args.ohlc:
+                data_handler_config = {
+                    "start_time": start_time,
+                    "end_time": test_end_time,
+                    "instruments": market,
+                    "data_loader": sdl_pkl,
+                    "infer_processors":infer_processors,
+                    "learn_processors":learn_processors,
+                    "process_type": "append",
+                    "drop_raw": True,
+                }   
+                task["dataset"] = {
+                    "class": "TSDatasetH",
+                    "module_path": "qlib.data.dataset",
+                    "kwargs": {
+                        "handler": {
+                            "class": "DataHandlerLP",
+                            "module_path": "qlib.data.dataset.handler",
+                            "kwargs": data_handler_config,
+                        },
+                        "segments": {
+                            "train": (start_time, fit_end_time),
+                            "valid": (val_start_time, val_end_time),
+                            "test": (test_start_time, test_end_time),
+                        },
+                        "enable_cache": True ,
+                        "step_len": args.step_len, 
+                    },
+                }
+            else:
+                sys.exit(-1) # we should not reach here 
+        else:
+            data_handler_config = {
+                "start_time": start_time,
+                "end_time": test_end_time,
+                "fit_start_time": start_time,
+                "fit_end_time": fit_end_time,
+                "instruments": market,
+                "infer_processors":infer_processors,
+                "learn_processors":learn_processors,
+                "drop_raw": True,
+                "filter_pipe": filter_pipe,
+            }   
+            task["dataset"] = {
                 "class": "TSDatasetH",
                 "module_path": "qlib.data.dataset",
                 "kwargs": {
@@ -165,13 +246,12 @@ if __name__ == "__main__":
                     },
                     "step_len": args.step_len,
                 },
-            },
-        }
+            }
 
         # 保存设置        
         os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
-        with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
-            json.dump(task, f, indent=2, ensure_ascii=False)
+        # with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
+        #     json.dump(task, f, indent=2, ensure_ascii=False)
 
         # model initialization
         if args.fake:

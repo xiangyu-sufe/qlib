@@ -30,16 +30,21 @@ from ..loss.ndcg import (compute_lambda_gradients, calculate_ndcg_optimized, ran
                          compute_delta_ndcg)
 from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss
 from qlib.utils.color import *
-from qlib.utils.hxy_utils import compute_grad_norm, compute_layerwise_grad_norm, apply_mask_preserve_norm, scale_preserve_sign_torch
+from qlib.utils.hxy_utils import (
+    compute_grad_norm, compute_layerwise_grad_norm, 
+    apply_mask_preserve_norm, scale_preserve_sign_torch,
+    process_ohlc,
+)
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
+import logging
+import sys
 
 init(autoreset=True)
 
 class DailyBatchSampler(Sampler):
     """
-    Yield all rows of the same trading day as one batch,
-    independent of the index sort order.
+        HXY 修正
     """
     def __init__(self, data_source):
         self.data_source = data_source
@@ -56,7 +61,7 @@ class DailyBatchSampler(Sampler):
             yield np.array(self.groups[dt])
 
     def __len__(self):
-        return len(self.data_source)
+        return len(self.order)
 
 
 class GRUNDCG(Model):
@@ -85,6 +90,7 @@ class GRUNDCG(Model):
         metric="",
         batch_size=2000,
         early_stop=20,
+        step_len=20,
         loss="mse",
         optimizer="adam",
         n_jobs=10,
@@ -97,10 +103,16 @@ class GRUNDCG(Model):
         save_path=None,
         weight=0.7,
         combine_type='mult',
+        ohlc=False,
         **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("GRU")
+        self.logger.setLevel(logging.DEBUG)
+        if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.DEBUG)
+            self.logger.addHandler(handler)
         self.logger.info("GRU pytorch version...")
 
         # set hyper-parameters.
@@ -126,6 +138,10 @@ class GRUNDCG(Model):
         self.save_path = save_path
         self.combine_type = combine_type
         self.weight = weight
+        self.ohlc = ohlc
+        self.step_len = step_len
+        if self.ohlc:
+            self.logger.info(Fore.RED + "使用OHLC数据, 默认为前 6 个特征" + Style.RESET_ALL)
         self.logger.info(Fore.RED + "use GPU: %s" % str(self.device) + Style.RESET_ALL)
         self.logger.info(Fore.RED + ("Debug Mode" if self.debug else "RUN Mode") + Style.RESET_ALL)
         self.logger.info(
@@ -150,6 +166,7 @@ class GRUNDCG(Model):
             "\nlinear_ndcg : {}"
             "\ncombine_type : {}"
             "\nweight : {}"
+            "\nstep_len : {}"
             "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
@@ -171,6 +188,7 @@ class GRUNDCG(Model):
                 linear_ndcg,
                 combine_type,
                 weight,
+                step_len,
                 save_path,
             )
         )
@@ -251,10 +269,16 @@ class GRUNDCG(Model):
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
 
-        for data, weight in data_loader:
+        for i, (data, weight) in tqdm(enumerate(data_loader)):
+            if i <= self.step_len:
+                # warm up
+                continue
+                
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
+            if self.ohlc:
+                feature = process_ohlc(feature)
             pred = self.GRU_model(feature.float())
             # 这里使用NDCG @k来计算损失
             pred.requires_grad_(True)
@@ -355,7 +379,8 @@ class GRUNDCG(Model):
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, -1].to(self.device)
-
+            if self.ohlc:
+                feature = process_ohlc(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
                 # 计算RankNet交叉熵损失（仅用于观察）
@@ -494,7 +519,8 @@ class GRUNDCG(Model):
         for data in test_loader:
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
-
+            if self.ohlc:
+                feature = process_ohlc(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float()).detach().cpu().numpy()
 

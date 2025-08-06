@@ -121,14 +121,16 @@ class MIGA(Model):
         save_path=None,
         step_len=1,
         news_store=None,
+        use_news=True,
         **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("MIGA News")
+        self.logger.setLevel(logging.DEBUG)
         self.logger.info("MIGA News pytorch version...")
         if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
             handler = logging.StreamHandler(sys.stdout)
-            handler.setLevel(logging.INFO)
+            handler.setLevel(logging.DEBUG)
             self.logger.addHandler(handler)
         self.logger.info("MIGA News pytorch version...")        
         # set hyper-parameters.
@@ -157,6 +159,7 @@ class MIGA(Model):
         self.save_path = save_path
         self.step_len = step_len
         self.news_store = news_store
+        self.use_news = use_news
         
         if  self.loss == "miga":
             self.omega = omega
@@ -243,28 +246,46 @@ class MIGA(Model):
             torch.manual_seed(self.seed)
         
         # 路由器设置
-        
-        router = PriceNewsRouter(
-            price_dim=self.d_feat,
-            news_dim=1024,
-            d_model=self.hidden_size,
-            n_heads=self.num_heads, # 这里的 num_heads 共用了
+        if self.use_news:
+            self.logger.info(f"{Fore.RED}使用新闻数据{Style.RESET_ALL}")
+            router = PriceNewsRouter(
+                price_dim=self.d_feat,
+                news_dim=1024,
+                d_model=self.hidden_size,
+                n_heads=self.num_heads, # 这里的 num_heads 共用了
             d_gru=self.hidden_size,
             dropout=self.dropout
-        )
+            )
 
-        # 定义 MIGA 新闻模型
-        self.MIGA_model = MIGANewsModel(
-            input_dim=self.d_feat,
-            d_gru=self.hidden_size,
-            news_dim=1024,
-            num_groups=self.num_groups,
-            num_experts_per_group=self.num_experts_per_group,
-            num_heads=self.num_heads,
-            top_k=self.top_k,
-            expert_output_dim=self.expert_output_dim,
-            router=router,
-        )
+            # 定义 MIGA 新闻模型
+            self.MIGA_model = MIGANewsModel(
+                input_dim=self.d_feat,
+                d_gru=self.hidden_size,
+                news_dim=1024,
+                num_groups=self.num_groups,
+                num_experts_per_group=self.num_experts_per_group,
+                num_heads=self.num_heads,
+                top_k=self.top_k,
+                expert_output_dim=self.expert_output_dim,
+                router=router,
+            )
+        else:
+            self.logger.info(f"{Fore.BLUE}不使用新闻数据{Style.RESET_ALL}")
+            router = Router(
+                input_dim=self.d_feat,
+                hidden_dim=self.hidden_size,
+                num_groups=self.num_groups,
+                num_experts_per_group=self.num_experts_per_group,
+            )
+            self.MIGA_model = MIGAModel(
+                input_dim=self.d_feat,
+                num_groups=self.num_groups,
+                num_experts_per_group=self.num_experts_per_group,
+                num_heads=self.num_heads,
+                top_k=self.top_k,
+                expert_output_dim=self.expert_output_dim,
+                router=router,
+            )
         self.logger.info("model:\n{:}".format(self.MIGA_model))
         self.logger.info("model size: {:.4f} MB".format(count_parameters(self.MIGA_model)))
 
@@ -333,11 +354,13 @@ class MIGA(Model):
             data.squeeze_(0) # 去除横截面 dim
             news_mask.squeeze_(0)
             price_feature = data[:,:, :self.d_feat].to(self.device)
-            label = data[:, -1, -1].to(self.device)
+            label = data[:, -1, self.d_feat].to(self.device)
             news_feature = data[:,:, self.d_feat+1:].to(self.device)
             news_mask = news_mask.to(self.device)
-            
-            output = self.MIGA_model(price_feature, news_feature, news_mask)
+            if self.use_news:
+                output = self.MIGA_model(price_feature, news_feature, news_mask)
+            else:
+                output = self.MIGA_model(price_feature)
             pred = output['predictions']
             hidden_representations = output['hidden_representations']
             
@@ -375,7 +398,9 @@ class MIGA(Model):
 
         if self.debug:
             self.logger.debug(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
-            self.logger.debug(f"{Fore.RED} Expert Loss: {np.mean(expert_loss_list):.6f}, Router Loss: {np.mean(router_loss_list):.6f}{Style.RESET_ALL}")
+            self.logger.debug(f"{Fore.RED} Total Loss: {np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
+            self.logger.debug(f"{Fore.RED}Expert Loss: {np.mean(expert_loss_list):.6f}, Expert Loss Ratio: {np.mean(expert_loss_list)/np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
+            self.logger.debug(f"{Fore.RED} Router Loss: {np.mean(router_loss_list):.6f}, Router Loss Ratio: {np.mean(router_loss_list)/np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
             avg_grad_norm = np.mean(epoch_grad_norms)
             self.logger.debug(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
             # 计算每层的平均梯度范数
@@ -389,7 +414,7 @@ class MIGA(Model):
                         else:
                             layer_norms.append(batch_layer[layer_name])
                     avg_layer_norm = np.mean(layer_norms)
-                    self.logger.debug(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}")
+                    self.logger.debug(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}, Ratio: {avg_layer_norm/avg_grad_norm:.6f}")
 
         return result
     
@@ -411,12 +436,15 @@ class MIGA(Model):
             data.squeeze_(0) # 去除横截面 dim
             news_mask.squeeze_(0)
             price_feature = data[:,:, :self.d_feat].to(self.device)
-            label = data[:, -1, -1].to(self.device)
+            label = data[:, -1, self.d_feat].to(self.device)
             news_feature = data[:,:, self.d_feat+1:].to(self.device)
             news_mask = news_mask.to(self.device)
             
             with torch.no_grad():
-                output = self.MIGA_model(price_feature.float(), news_feature.float(), news_mask)
+                if self.use_news:
+                    output = self.MIGA_model(price_feature.float(), news_feature.float(), news_mask)
+                else:
+                    output = self.MIGA_model(price_feature.float())
                 pred = output['predictions']
                 hidden_representations = output['hidden_representations']
                 loss_dict = self.loss_fn(pred, label, hidden_representations)
@@ -587,6 +615,36 @@ class MIGA(Model):
 
         return pd.Series(np.concatenate(preds), index=self.test_index)
     
+    def predict_train(self, dataset, segment = 'train'):
+        if not self.fitted:
+            raise ValueError("model is not fitted yet!")        
+
+        dl = dataset.prepare(segment, col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+        dl.config(fillna_type="ffill+bfill")
+        index = dl.get_index()
+        dl = IndexedSeqDataset(dl)
+
+        test_loader = DataLoader(dl,
+                                 batch_size=self.batch_size,
+                                 num_workers=self.n_jobs,
+                                 collate_fn=make_collate_fn(self.news_store, self.step_len))
+        self.MIGA_model.eval()
+        preds = []
+
+        for data, news_mask in test_loader:
+            data.squeeze_(0) # 去除横截面 dim
+            news_mask.squeeze_(0)
+            feature = data[:, :, :self.d_feat].to(self.device)
+            news_feature = data[:, :, self.d_feat+1:].to(self.device)
+            news_mask = news_mask.to(self.device)
+
+            with torch.no_grad():
+                output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
+                pred = output['predictions'].detach().cpu().numpy()
+
+            preds.append(pred)
+
+        return pd.Series(np.concatenate(preds), index=index)
 
     def visualize_evals_result(self, evals_result, save_path=None, train_index=None, val_index=None, test_index=None):
         """
@@ -790,7 +848,6 @@ class MIGAModel(nn.Module):
         self.top_k = top_k
         self.expert_output_dim = expert_output_dim
         self.hidden_dim = self.num_groups * self.num_experts_per_group
-        self.batch_norm = nn.BatchNorm1d(1)
         # Router
         self.router = router 
 
@@ -902,7 +959,7 @@ class MIGANewsModel(nn.Module):
         self.top_k = top_k
         self.expert_output_dim = expert_output_dim
         self.hidden_dim = self.num_groups * self.num_experts_per_group
-        self.batch_norm = nn.BatchNorm1d(1)
+        # self.batch_norm = nn.BatchNorm1d(1)
         # Router
         self.router = router 
         self.hidden_to_gate = nn.Linear(self.d_gru, self.hidden_dim)
@@ -1026,13 +1083,15 @@ class CrossAttentionAggregator(nn.Module):
 class PriceNewsCrossAttn(nn.Module):
     def __init__(self, d_price, d_news, d_model, n_heads, d_gru, dropout=0.1):
         super().__init__()
+        self.NO_NEWS_TOKEN = torch.nn.Parameter(torch.zeros(1, d_news))
+        nn.init.xavier_uniform_(self.NO_NEWS_TOKEN)
         self.price_proj = nn.Linear(d_price, d_model) 
         self.news_proj = nn.Linear(d_news, d_model) 
         self.cross_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout, batch_first=True)
-
+        
         self.resid_dropout = nn.Dropout(dropout)
         self.ln = nn.LayerNorm(d_model)
-        self.gru = nn.GRU(input_size=d_model, hidden_size=d_gru, batch_first=True)
+        self.gru = nn.GRU(input_size=2*d_model, hidden_size=d_gru, batch_first=True)
 
     def forward(self, price, news, mask):
         """
@@ -1041,7 +1100,13 @@ class PriceNewsCrossAttn(nn.Module):
         mask:  [N, T]
         return: [N, T, d_model]
         """
+        has_real_news = (~mask).any(dim=1).float().unsqueeze(-1)  # shape: [N, 1]
+        # 方案一 学习一个 NO NEWS TOKEN
+        all_masked = mask.all(dim=1)  # shape: [N], bool
+        news[all_masked, -1, :] = self.NO_NEWS_TOKEN # 最后一个设为 NO NEWS TOKEN 
+        mask[all_masked, -1] = False
         # 1. 投影
+        # 
         price_proj = self.price_proj(price)  # [N, T, d_model]
         news_proj = self.news_proj(news)    # [N, T, d_model]
 
@@ -1053,8 +1118,8 @@ class PriceNewsCrossAttn(nn.Module):
                                       key_padding_mask=mask)
 
         # 3. Residual + Dropout
-        fused = self.ln(price_proj + self.resid_dropout(attn_out))  # [N, T, d_model]
-
+        attn_out = self.ln(price_proj + self.resid_dropout(attn_out))  # [N, T, d_model]
+        fused = torch.cat([price_proj, attn_out], dim=-1)  # [N, T, 2*d_model]
         # 4. GRU
         out, _ = self.gru(fused)  # [N, T, d_model]
 
@@ -1109,9 +1174,8 @@ class Router(nn.Module):
         self.num_experts_per_group = num_experts_per_group
         self.hidden_dim = hidden_dim
         self.fc_dim = self.num_experts_per_group * self.num_groups       
-        self.fc = nn.Linear(self.hidden_dim, self.fc_dim)
-        self.activation = nn.LeakyReLU()
-        
+        # self.activation = nn.LeakyReLU()
+
         if  model == 'gru':
             self.model = nn.GRU(
                 input_size=input_dim,
@@ -1130,6 +1194,7 @@ class Router(nn.Module):
             )
         else:
             raise NotImplementedError(f"model {model} is not supported!")
+        self.fc = nn.Linear(self.hidden_dim, self.fc_dim)
                 
         # Cross-sectional encoder
         # self.encoder = nn.Sequential(
@@ -1151,7 +1216,7 @@ class Router(nn.Module):
         # Use the last time step for cross-sectional encoding
         hidden, _ = self.model(x)
         hidden = hidden[:,-1,:]
-        hidden = self.activation(hidden)
+        # hidden = self.activation(hidden)
         
         return self.fc(hidden)
              
