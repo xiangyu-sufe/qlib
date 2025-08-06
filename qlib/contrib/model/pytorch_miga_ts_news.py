@@ -639,7 +639,10 @@ class MIGA(Model):
             news_mask = news_mask.to(self.device)
 
             with torch.no_grad():
-                output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
+                if self.use_news:
+                    output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
+                else:
+                    output = self.MIGA_model(feature.float())
                 pred = output['predictions'].detach().cpu().numpy()
 
             preds.append(pred)

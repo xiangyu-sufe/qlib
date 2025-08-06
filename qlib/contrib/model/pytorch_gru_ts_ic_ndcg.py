@@ -33,7 +33,7 @@ from qlib.utils.color import *
 from qlib.utils.hxy_utils import (
     compute_grad_norm, compute_layerwise_grad_norm, 
     apply_mask_preserve_norm, scale_preserve_sign_torch,
-    process_ohlc,
+    process_ohlc_minmax,
 )
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
@@ -278,7 +278,7 @@ class GRUNDCG(Model):
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
             if self.ohlc:
-                feature = process_ohlc(feature)
+                feature = process_ohlc_minmax(feature)
             pred = self.GRU_model(feature.float())
             # 这里使用NDCG @k来计算损失
             pred.requires_grad_(True)
@@ -291,7 +291,7 @@ class GRUNDCG(Model):
                     lambda_grads = compute_delta_ndcg(pred.detach(), label.detach(), self.n_layer, sigma=self.sigma, linear=self.linear_ndcg)
                     lambda_grads = lambda_grads / lambda_grads.sum()
                 loss = self.loss_fn(pred, label)
-                grad = torch.autograd.grad(loss, pred, create_graph=False)[0]
+                grad = torch.autograd.grad(loss, pred, create_graph=True)[0]
                 if self.combine_type == 'mult': # 相乘形式
                     # lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'minmax')
                     lambda_grads = lambda_grads * grad * 1000
@@ -317,13 +317,13 @@ class GRUNDCG(Model):
             pred.backward(lambda_grads)                
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
             # 手动更新梯度
-            # with torch.no_grad():
-            #     lr = self.train_optimizer.param_groups[0]['lr']
-            #     for p in self.GRU_model.parameters():
-            #         if p.grad is not None:
-            #             p.data -= lr * p.grad
+            with torch.no_grad():
+                lr = self.train_optimizer.param_groups[0]['lr']
+                for p in self.GRU_model.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
             # 优化器更新梯度
-            self.train_optimizer.step()
+            # self.train_optimizer.step()
             # 更新完后记录下梯度
             if self.debug:
                 grad_norm = compute_grad_norm(self.GRU_model)
@@ -380,7 +380,7 @@ class GRUNDCG(Model):
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, -1].to(self.device)
             if self.ohlc:
-                feature = process_ohlc(feature)
+                feature = process_ohlc_minmax(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
                 # 计算RankNet交叉熵损失（仅用于观察）
@@ -520,7 +520,7 @@ class GRUNDCG(Model):
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, 0:-1].to(self.device)
             if self.ohlc:
-                feature = process_ohlc(feature)
+                feature = process_ohlc_minmax(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float()).detach().cpu().numpy()
 
@@ -658,4 +658,9 @@ class GRUModel(nn.Module):
     def forward(self, x):
         x = x.squeeze()  # remove the time dimension
         out, _ = self.rnn(x)
-        return self.fc_out(out[:, -1, :]).squeeze()
+        if torch.isnan(out).any():
+            raise ValueError("GRU output contains NaN values")
+        out = self.fc_out(out[:, -1, :]).squeeze()
+        if torch.isnan(out).any():
+            raise ValueError("FC output contains NaN values")
+        return out

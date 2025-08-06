@@ -592,4 +592,21 @@ def process_ohlc(ohlc: torch.Tensor):
     
     return ohlc
 
+def process_ohlc_minmax(data: torch.Tensor):
+    # ohlc: (N, T, 6)
+    ohlc = data[:, :, :6]  # N, T, 6
 
+    ohlc_min = ohlc.min(dim=1, keepdim=True)[0]  # N, 1, 6
+    ohlc_max = ohlc.max(dim=1, keepdim=True)[0]  # N, 1, 6
+    denom = ohlc_max - ohlc_min                  # N, 1, 6
+
+    # broadcast denom, ohlc_min to (N, T, 6)
+    denom_exp = denom.expand_as(ohlc)
+    min_exp = ohlc_min.expand_as(ohlc)
+
+    ohlc = torch.where(
+        denom_exp == 0,
+        torch.zeros_like(ohlc),
+        (ohlc - min_exp) / denom_exp
+    )
+    return ohlc
