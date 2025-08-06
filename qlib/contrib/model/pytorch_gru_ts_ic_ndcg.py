@@ -310,13 +310,13 @@ class GRUNDCG(Model):
                 # 路线 2
                 with torch.no_grad():
                     # 计算每个样本的ndcg变化
-                    lambda_grads = compute_delta_ndcg(pred.detach(), label.detach(), self.n_layer, sigma=self.sigma, linear=self.linear_ndcg)
+                    lambda_grads = compute_delta_ndcg(pred.detach(), label.detach(), 1, sigma=self.sigma, linear=self.linear_ndcg)
                     lambda_grads = lambda_grads / lambda_grads.sum()
                 loss = self.loss_fn(pred, label)
                 grad = torch.autograd.grad(loss, pred, create_graph=True)[0]
                 if self.combine_type == 'mult': # 相乘形式
-                    # lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'minmax')
-                    lambda_grads = lambda_grads * grad * 1000
+                    lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'l2')
+                    # lambda_grads = lambda_grads * grad * 100
                 elif self.combine_type == 'null':
                     lambda_grads = grad
                 elif self.combine_type == 'add': # 相加形式
@@ -340,14 +340,14 @@ class GRUNDCG(Model):
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
             # 手动更新梯度
             # self.logger.debug(f"\n 手动更新梯度")
-            # with torch.no_grad():
-            #     lr = self.train_optimizer.param_groups[0]['lr']
-            #     for p in self.GRU_model.parameters():
-            #         if p.grad is not None:
-            #             p.data -= lr * p.grad
+            with torch.no_grad():
+                lr = self.train_optimizer.param_groups[0]['lr']
+                for p in self.GRU_model.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
             # 优化器更新梯度
             # self.logger.debug(f"\n 优化器{self.optimizer}更新梯度")
-            self.train_optimizer.step()
+            # self.train_optimizer.step()
             # 更新完后记录下梯度
             if self.debug:
                 grad_norm = compute_grad_norm(self.GRU_model)

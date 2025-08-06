@@ -195,4 +195,4 @@ def score_ic_graph(pred_label: pd.DataFrame, show_notebook: bool = True, **kwarg
     if show_notebook:
         ScatterGraph.show_graph_in_notebook([_figure])
     else:
-        return (_figure, title)
+        return _figure, title

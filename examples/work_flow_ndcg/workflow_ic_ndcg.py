@@ -300,7 +300,7 @@ if __name__ == "__main__":
             
             # 保存图片 - 使用多种方法
             try:
-                fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+                fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
                 # 方法1: 尝试保存为PNG
                 try:
                     fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
