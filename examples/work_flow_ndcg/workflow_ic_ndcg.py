@@ -17,7 +17,8 @@ from qlib.utils.hxy_utils import (get_label,
                                   prepare_task_pool, 
                                   read_alpha64, 
                                   read_ohlc,
-                                  read_label,)
+                                  read_label,
+                                  custom_serializer)
 from torch.utils.data import TensorDataset, DataLoader
 from qlib.data.dataset.loader import StaticDataLoader
 import torch
@@ -259,8 +260,8 @@ if __name__ == "__main__":
 
         # 保存设置        
         os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
-        # with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
-        #     json.dump(task, f, indent=2, ensure_ascii=False)
+        with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
+            json.dump(task, f, indent=2, ensure_ascii=False, default=custom_serializer)
 
         # model initialization
         if args.fake:

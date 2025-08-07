@@ -11,13 +11,30 @@ import tqdm
 import pickle
 import torch
 from qlib.data.dataset import TSDatasetH   # 已在 sys.path 中
+from qlib.data.dataset.loader import StaticDataLoader
 import matplotlib.pyplot as plt
+from pathlib import Path
+from datetime import datetime
 
 
 root_dir = os.path.expanduser("~")
 
 calendar_path =  f"{root_dir}/GRU/alphamat/20250625/data/calendars/day.csv"
 calendar = pd.read_csv(calendar_path)
+
+# ==============================  控制流部分
+
+def custom_serializer(obj):
+    if isinstance(obj, (datetime, )):
+        return obj.isoformat()
+    elif isinstance(obj, Path):
+        return str(obj)
+    elif isinstance(obj, set):
+        return list(obj)
+    # fallback
+    return str(obj)  # 或 raise TypeError(f"Type {type(obj)} not serializable")
+
+# ==============================  模型部分
 
 def compute_grad_norm(model):
     """
