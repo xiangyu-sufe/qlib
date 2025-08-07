@@ -124,7 +124,7 @@ class MIGA(Model):
         epsilon=1,
         omega_scheduler=None,
         omega_decay=0.96,
-        omega_step=None,
+        omega_step_epoch=None,
         omega_after=None,
         debug=False,
         save_path=None,
@@ -182,10 +182,12 @@ class MIGA(Model):
             self.epsilon = epsilon
             self.omega_scheduler = omega_scheduler
             self.omega_decay = omega_decay
+            self.omega_step_epoch = omega_step_epoch
+            self.omega_after = omega_after
             self.Miga_loss = MIGALoss(omega=self.omega, epsilon=self.epsilon)
             # 定义omega_scheduler
             if self.omega_scheduler == "exp":
-                def omega_scheduler(epoch):
+                def omega_scheduler_func(epoch):
                     # 指数衰减
                     # 但超过一定 epoch 数不再变化
                     if epoch < 10:
@@ -193,10 +195,10 @@ class MIGA(Model):
                     else:
                         return self.omega * (self.omega_decay ** 10)     
             elif self.omega_scheduler == "step":
-                def omega_scheduler(epoch):
+                def omega_scheduler_func(epoch):
                     return self.omega if epoch < self.omega_step_epoch else self.omega_after
             else:
-                omega_scheduler = None
+                omega_scheduler_func = None
         elif self.loss == "ic":
             self.logger.info("Use IC loss")
         else:
@@ -215,6 +217,8 @@ class MIGA(Model):
             "\nepsilon : {}"
             "\nomega_scheduler : {}"
             "\nomega_decay : {}"
+            "\nomega_step_epoch : {}"
+            "\nomega_after : {}"
             "\nnum_layers : {}"
             "\ndropout : {}"
             "\nn_epochs : {}"
@@ -242,6 +246,8 @@ class MIGA(Model):
                 epsilon,
                 omega_scheduler,
                 omega_decay,
+                omega_step_epoch,
+                omega_after,
                 num_layers,
                 dropout,
                 n_epochs,
@@ -358,7 +364,7 @@ class MIGA(Model):
             raise ValueError("unknown loss `%s`" % self.loss)
         
         
-    def metric_fn(self, pred, label, name, topk=None):
+    def metric_fn(self, pred, label, name, hidden=None, topk=None):
         mask = torch.isfinite(label)
 
         if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
@@ -377,7 +383,18 @@ class MIGA(Model):
                     return torch.nan
                 return -topk_rankic_loss(pred[mask], label[mask], k=topk).item()
             elif name == "loss":
-                return -self.loss_fn(pred[mask], label[mask]).item()
+                if self.loss == "miga":
+                    loss_dict = self.loss_fn(pred[mask], label[mask], hidden=hidden)
+                    if isinstance(loss_dict, dict):
+                        return -loss_dict['total_loss'].item()
+                    else:
+                        raise ValueError("MIGA Loss return a torch.Tensor, but expect a dict")
+                else:
+                    loss = self.loss_fn(pred[mask], label[mask], hidden=hidden)
+                    if isinstance(loss, torch.Tensor):
+                        return -loss.item()
+                    else:
+                        raise ValueError(f"Loss {self.loss} but expect a torch.Tensor")
 
         raise ValueError("unknown metric `%s`" % name)
         
@@ -421,12 +438,13 @@ class MIGA(Model):
             hidden_representations = output['hidden_representations']
             if self.loss == "miga":
                 loss_dict = self.loss_fn(pred, label, hidden_representations,)
-                if isinstance(loss_dict, dict):
-                    loss = loss_dict['total_loss']
-                else:
-                    loss = loss_dict
+    
             else:
-                loss = self.loss_fn(pred, label)
+                loss_dict = self.loss_fn(pred, label)
+            if isinstance(loss_dict, dict):
+                loss = loss_dict['total_loss']
+            else:
+                loss = loss_dict
             self.train_optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.MIGA_model.parameters(), 3.0)
@@ -619,7 +637,7 @@ class MIGA(Model):
         # 可视化损失
         visualize_evals_result_general(evals_result, list(range(self.n_epochs)), best_epoch,
                                        self.train_index, self.val_index, save_path, self.logger)
-            
+
     
     
     def predict(self, dataset):
