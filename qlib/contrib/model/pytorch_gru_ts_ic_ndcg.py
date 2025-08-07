@@ -25,6 +25,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data import Sampler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
@@ -222,7 +223,14 @@ class GRUNDCG(Model):
             self.train_optimizer = optim.SGD(self.GRU_model.parameters(), lr=self.lr)
         else:
             raise NotImplementedError("optimizer {} is not supported!".format(optimizer))
-
+        
+        self.lr_scheduler = ReduceLROnPlateau(
+            optimizer=self.train_optimizer,
+            mode='max',
+            factor = 0.2,
+            patience = 3, 
+            min_lr = 1e-5           # 学习率下限
+        )
         self.fitted = False
         self.GRU_model.to(self.device)
 
@@ -510,7 +518,8 @@ class GRUNDCG(Model):
                 )
 
             val_score = valid_result['val_'+self.metric]
-
+            # 更新学习率
+            self.lr_scheduler.step(val_score)
             if val_score > best_score:
                 best_score = val_score
                 stop_steps = 0
