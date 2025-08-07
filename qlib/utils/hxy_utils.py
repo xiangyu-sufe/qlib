@@ -505,8 +505,7 @@ def make_collate_fn(news_store, step_len, dim_news=1024):
         price_valid = price
         news_valid = news 
         mask_valid = n_mask 
-        feat = torch.cat([price_valid, news_valid], dim=-1)        # (N, T, Dq+Dn)
-        return feat, mask_valid   # <-- 多返回一个 mask
+        return price_valid, news_valid, mask_valid   # <-- 多返回一个 mask
     
     return collate_fn
 
@@ -514,6 +513,13 @@ def _fetch_news_seq(store, inst, dts_seq, dim_news):
     # inst     单个 instrument
     # dts_seq  单个 dts_seq
     vecs, mask = [], []
+    et = dts_seq[-1]
+    for dt in dts_seq:
+        if dt is not None:
+            st = dt
+            break
+    # 转为自然日
+    dts_seq = pd.date_range(st, et, freq='D')
     if isinstance(inst, list):
         for ins, dts in zip(inst, dts_seq):
             for dt in dts:

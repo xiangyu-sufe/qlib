@@ -350,12 +350,17 @@ class MIGA(Model):
         total_len = 0
         count = 0
         pbar = tqdm(data_loader, desc="training...")
-        for data, news_mask in pbar:
-            data.squeeze_(0) # 去除横截面 dim
+        for i, (data, news, news_mask) in enumerate(pbar):
+            if i < self.step_len:
+                continue
+            # 去除横截面 dim
+            data.squeeze_(0) 
+            news.squeeze_(0)
             news_mask.squeeze_(0)
+            # 取出量价、新闻、mask
             price_feature = data[:,:, :self.d_feat].to(self.device)
             label = data[:, -1, self.d_feat].to(self.device)
-            news_feature = data[:,:, self.d_feat+1:].to(self.device)
+            news_feature = news.to(self.device)
             news_mask = news_mask.to(self.device)
             if self.use_news:
                 output = self.MIGA_model(price_feature, news_feature, news_mask)
@@ -432,12 +437,14 @@ class MIGA(Model):
         total_len = 0
         count = 0
         pbar = tqdm(data_loader, desc="evaluating...") 
-        for data, news_mask in pbar:
-            data.squeeze_(0) # 去除横截面 dim
+        for data, news, news_mask in pbar:
+            # 去除横截面 dim
+            data.squeeze_(0) 
+            news.squeeze_(0)
             news_mask.squeeze_(0)
             price_feature = data[:,:, :self.d_feat].to(self.device)
             label = data[:, -1, self.d_feat].to(self.device)
-            news_feature = data[:,:, self.d_feat+1:].to(self.device)
+            news_feature = news.to(self.device)
             news_mask = news_mask.to(self.device)
             
             with torch.no_grad():
