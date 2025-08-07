@@ -34,13 +34,14 @@ if __name__ == "__main__":
     import time
     parser = argparse.ArgumentParser()
     # 实验参数
-    parser.add_argument("--onlyrun_task_id", type=int, default=None, help="Only run task id")
+    parser.add_argument("--onlyrun_task_id", type=int, nargs="+", default=None, help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--step_len", type=int, default=20, help="Step length")
     parser.add_argument("-v", "--version", type=int, default=1, help="Version of the model")
     parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
     parser.add_argument("--n_jobs", type=int, default=0, help="Number of jobs for parallel processing")
+    parser.add_argument("--gpu", type=int, default=0, help="GPU id")
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
@@ -68,10 +69,14 @@ if __name__ == "__main__":
     parser.add_argument("--use_news", action="store_true", help="是否使用新闻数据")
     parser.add_argument("--padding_method", type=str, default="zero", choices=["zero", "learn"], help="Padding method for news")
     # MIGA损失函数参数
+    parser.add_argument("--loss", type=str, default="miga", choices=["miga", "ic"], help="Loss function")
+    parser.add_argument("--metric", type=str, default="ic", choices=["ic", "rankic"], help="Metric function")
     parser.add_argument("--omega", type=float, default=2e-2, help="Router loss weight")
     parser.add_argument("--epsilon", type=float, default=1.0, help="Expert loss weight")
     parser.add_argument("--omega_scheduler", type=str, default="exp", choices=["none", "exp", "step"], help="omega动态调整策略: none/exp/step")
     parser.add_argument("--omega_decay", type=float, default=0.96, help="指数衰减率（exp模式）")
+    parser.add_argument("--omega_step_epoch", type=int, default=10, help="Step epoch for omega")
+    parser.add_argument("--omega_after", type=float, default=1.0, help="Omega after step epoch")
     args = parser.parse_args()
     save_path = args.save_path
     save_path = os.path.join(f'seed{args.onlyrun_seed_id}', save_path)
@@ -88,8 +93,8 @@ if __name__ == "__main__":
         if not os.path.exists(news_lmdb_path):
             news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
             write_lmdb(news_embed, news_lmdb_path)
-        news_store = NewsStore(news_lmdb_path)
-        print(f'新闻数据占用内存大小: {news_store.memory_usage} MB')
+        # news_store = NewsStore(news_lmdb_path)
+        # print(f'新闻数据占用内存大小: {news_store.memory_usage} MB')
     # 读取量价数据
     if args.ohlc:
         print("读取高开低收数据")
@@ -211,10 +216,10 @@ if __name__ == "__main__":
                     "batch_size": args.batch_size,
                     "lr": args.lr,
                     "early_stop": args.early_stop,
-                    "metric": "ic",
-                    "loss": "miga",
+                    "metric": args.metric,
+                    "loss": args.loss,
                     "n_jobs": args.n_jobs,
-                    "GPU": 0,
+                    "GPU": args.gpu,
                     "lambda_reg": args.lambda_reg, # 损失参数
                     "omega": args.omega,
                     "epsilon": args.epsilon,
@@ -223,7 +228,7 @@ if __name__ == "__main__":
                     "debug": True,  # Set to True for debugging mode
                     "save_path": save_path,
                     "step_len": args.step_len,
-                    "news_store": news_store,
+                    "news_store": news_lmdb_path,
                     "use_news" : args.use_news,
                     "ohlc": args.ohlc,
                     "padding_method": args.padding_method,
@@ -256,17 +261,17 @@ if __name__ == "__main__":
         dataset = init_instance_by_config(task["dataset"])
         model.fit(dataset)
         # 在训练集预测
-        score_train = model.predict_train(dataset)
-        score_train.name = 'score'
-        score_train = score_train.to_frame()
-        label_train = get_label(dataset, segment="train")
-        label_train.columns = ["label"]
+        # score_train = model.predict_train(dataset)
+        # score_train.name = 'score'
+        # score_train = score_train.to_frame()
+        # label_train = get_label(dataset, segment="train")
+        # label_train.columns = ["label"]
         
-        pred_label_train = pd.concat([label_train, score_train], axis=1, sort=True).reindex(label_train.index)
-        fig, = analysis_position.score_ic_graph(pred_label_train, show_notebook=False)
-        # 保存图
-        # fig.savefig(f"{save_path}/score_ic_graph.png")
-        fig, = analysis_position.top_score_ic_graph(pred_label_train, show_notebook=False)
+        # pred_label_train = pd.concat([label_train, score_train], axis=1, sort=True).reindex(label_train.index)
+        # fig, = analysis_position.score_ic_graph(pred_label_train, show_notebook=False)
+        # # 保存图
+        # # fig.savefig(f"{save_path}/score_ic_graph.png")
+        # fig, = analysis_position.top_score_ic_graph(pred_label_train, show_notebook=False)
         # fig.savefig(f"{save_path}/top_score_ic_graph.png")
         
         # 在测试集预测

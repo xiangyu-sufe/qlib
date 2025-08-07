@@ -24,6 +24,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
@@ -32,7 +33,9 @@ from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
 from ..loss.loss import (ic_loss, rankic_loss,
                          topk_ic_loss, topk_rankic_loss,
-                           ranking_loss, pairwise_loss, mse)
+                           ranking_loss, pairwise_loss, mse,
+                            topk_return)
+from ..loss.ndcg import calculate_ndcg_optimized
 from ..loss.miga import MIGALoss
 from qlib.utils.hxy_utils import (compute_grad_norm, 
                                   compute_layerwise_grad_norm,
@@ -120,6 +123,8 @@ class MIGA(Model):
         GPU=0,
         seed=None,
         lambda_reg=0.1,
+        n_layer=10,
+        linear_ndcg=False,
         omega=0.1,
         epsilon=1,
         omega_scheduler=None,
@@ -164,7 +169,7 @@ class MIGA(Model):
         self.early_stop = early_stop
         self.loss = loss
         self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
-        self.optimizer_type = optimizer
+        self.optimizer = optimizer
         self.n_jobs = n_jobs
         self.GPU = GPU
         self.seed = seed if seed is not None else 42
@@ -172,18 +177,21 @@ class MIGA(Model):
         self.debug = debug
         self.save_path = save_path
         self.step_len = step_len
-        self.news_store = news_store
+        self.news_store_path = news_store
         self.use_news = use_news
         self.padding_method = padding_method
         self.ohlc = ohlc
         self.display_list = display_list
+        self.omega = omega
+        self.epsilon = epsilon
+        self.omega_scheduler = omega_scheduler
+        self.omega_decay = omega_decay
+        self.omega_step_epoch = omega_step_epoch
+        self.omega_after = omega_after
+        self.n_layer = n_layer
+        self.linear_ndcg = linear_ndcg
+
         if  self.loss == "miga":
-            self.omega = omega
-            self.epsilon = epsilon
-            self.omega_scheduler = omega_scheduler
-            self.omega_decay = omega_decay
-            self.omega_step_epoch = omega_step_epoch
-            self.omega_after = omega_after
             self.Miga_loss = MIGALoss(omega=self.omega, epsilon=self.epsilon)
             # 定义omega_scheduler
             if self.omega_scheduler == "exp":
@@ -235,35 +243,35 @@ class MIGA(Model):
             "\ndebug : {}"
             "\n\033[31mpadding_method : {}\033[0m"
             "\nsave_path : {}".format(
-                d_feat,
-                hidden_size,
-                num_groups,
-                num_experts_per_group,
-                num_heads,
-                top_k,
-                expert_output_dim,
-                omega,
-                epsilon,
-                omega_scheduler,
-                omega_decay,
-                omega_step_epoch,
-                omega_after,
-                num_layers,
-                dropout,
-                n_epochs,
-                lr,
-                metric,
-                batch_size,
-                early_stop,
-                optimizer.lower(),
-                loss,
+                self.d_feat,
+                self.hidden_size,
+                self.num_groups,
+                self.num_experts_per_group,
+                self.num_heads,
+                self.top_k,
+                self.expert_output_dim,
+                self.omega,
+                self.epsilon,
+                self.omega_scheduler,
+                self.omega_decay,
+                self.omega_step_epoch,
+                self.omega_after,
+                self.num_layers,
+                self.dropout,
+                self.n_epochs,
+                self.lr,
+                self.metric,
+                self.batch_size,
+                self.early_stop,
+                self.optimizer.lower(),
+                self.loss,
                 self.device,
-                n_jobs,
+                self.n_jobs,
                 self.use_gpu,
                 self.seed,
                 self.debug,
-                self.save_path,
                 self.padding_method,
+                self.save_path,
             )
         )
     
@@ -279,7 +287,13 @@ class MIGA(Model):
         else:
             raise NotImplementedError("optimizer {} is not supported!".format(optimizer))        
 
-
+        self.lr_scheduler = ReduceLROnPlateau(
+            optimizer=self.train_optimizer,
+            mode='max',
+            factor = 0.2,
+            patience = 3, 
+            min_lr = 1e-5           # 学习率下限
+        )
         
         self.fitted = False
         self.MIGA_model.to(self.device)
@@ -367,21 +381,15 @@ class MIGA(Model):
     def metric_fn(self, pred, label, name, hidden=None, topk=None):
         mask = torch.isfinite(label)
 
-        if name in ("", "loss", "ic", "rankic", "topk_ic", "topk_rankic"):
+        if name in ("", "loss", "ic", "rankic", "ndcg", "topk_return"):
             if name == "ic":
                 return -ic_loss(pred[mask], label[mask]).item()
             elif name == "rankic":
                 return -rankic_loss(pred[mask], label[mask]).item()
-            elif name == "topk_ic":
-                if topk is None:
-                    warnings.warn("topk must be specified for topk_ic metric, return nan")
-                    return torch.nan
-                return -topk_ic_loss(pred[mask], label[mask], k=topk).item()
-            elif name == "topk_rankic":
-                if topk is None:
-                    warnings.warn("topk must be specified for topk_ic metric, return nan")
-                    return torch.nan
-                return -topk_rankic_loss(pred[mask], label[mask], k=topk).item()
+            elif name == "ndcg":
+                return calculate_ndcg_optimized(label[mask], pred[mask], self.n_layer, linear=self.linear_ndcg).item()
+            elif name == "topk_return":
+                return topk_return(pred[mask], label[mask], k=self.n_layer).item()
             elif name == "loss":
                 if self.loss == "miga":
                     loss_dict = self.loss_fn(pred[mask], label[mask], hidden=hidden)
@@ -419,10 +427,10 @@ class MIGA(Model):
             news.squeeze_(0)
             news_mask.squeeze_(0)
             # 取出量价、新闻、mask
-            feature = data[:,:, :self.d_feat].to(self.device)
-            label = data[:, -1, self.d_feat].to(self.device)
-            news_feature = news.to(self.device)
-            news_mask = news_mask.to(self.device)
+            feature = data[:,:, :self.d_feat].to(self.device, non_blocking=True)
+            label = data[:, -1, self.d_feat].to(self.device, non_blocking=True)
+            news_feature = news.to(self.device, non_blocking=True)
+            news_mask = news_mask.to(self.device, non_blocking=True)
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
@@ -462,7 +470,7 @@ class MIGA(Model):
             pbar.set_postfix({"Average Length": total_len / count})
             # 记录损失
             for name in self.display_list:
-                result['train_'+name].append(self.metric_fn(pred, label, name = name))
+                result['train_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
 
         # Debug模式下记录梯度信息
         if self.debug:
@@ -503,10 +511,10 @@ class MIGA(Model):
             data.squeeze_(0) 
             news.squeeze_(0)
             news_mask.squeeze_(0)
-            feature = data[:,:, :self.d_feat].to(self.device)
-            label = data[:, -1, self.d_feat].to(self.device)
-            news_feature = news.to(self.device)
-            news_mask = news_mask.to(self.device)
+            feature = data[:,:, :self.d_feat].to(self.device, non_blocking=True)
+            label = data[:, -1, self.d_feat].to(self.device, non_blocking=True)
+            news_feature = news.to(self.device, non_blocking=True)
+            news_mask = news_mask.to(self.device, non_blocking=True)
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
@@ -556,8 +564,8 @@ class MIGA(Model):
         sampler_train = DailyBatchSampler(dl_train)
         sampler_valid = DailyBatchSampler(dl_valid)
     
-        dl_train = IndexedSeqDataset(dl_train)
-        dl_valid = IndexedSeqDataset(dl_valid)
+        dl_train = IndexedSeqDataset(dl_train,news_store_path=self.news_store_path)
+        dl_valid = IndexedSeqDataset(dl_valid,news_store_path=self.news_store_path)
 
         if reweighter is None:
             wl_train = np.ones(len(dl_train))
@@ -572,50 +580,65 @@ class MIGA(Model):
             dl_train,
             batch_sampler=sampler_train,
             num_workers=self.n_jobs,
-            collate_fn=make_collate_fn(self.news_store, self.step_len),
+            collate_fn=make_collate_fn(),
+            pin_memory=True,
+            prefetch_factor=2,
+            persistent_workers=True,
         )
         valid_loader = DataLoader(
             dl_valid,
             batch_sampler=sampler_valid,
             num_workers=self.n_jobs,
-            collate_fn=make_collate_fn(self.news_store, self.step_len),
+            collate_fn=make_collate_fn(),
+            pin_memory=True,
+            prefetch_factor=2,
+            persistent_workers=True,
         )
-
-        save_path = get_or_create_path(save_path)
+        # next(iter(train_loader)) # 预加载
+        # next(iter(valid_loader)) # 预加载
+        save_path = get_or_create_path(self.save_path)
         
         stop_steps = 0
         train_loss = 0
         best_score = -np.inf
         best_epoch = 0
-        evals_result["train"] = []
-        evals_result["valid"] = []
-        evals_result["train_score"] = []
-        evals_result["valid_score"] = []
+        evals_result["train"] = {}
+        evals_result["valid"] = {}
         # train
-        self.logger.info("training...")
+        self.logger.info("training...\n")
         self.fitted = True
         best_param = None
         
         for step in tqdm(range(self.n_epochs)):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
-            result = self.train_epoch(train_loader)
-            evals_result["train"].append(result["train"])
-            evals_result["train_score"].append(result["score"])
+            train_result = self.train_epoch(train_loader)
             self.logger.info("evaluating...")
-            result = self.test_epoch(valid_loader)
+            valid_result = self.test_epoch(valid_loader)
             
-            self.logger.info(
-                f"{Fore.GREEN}"
-                f"valid loss: {result['loss']:.6f}, valid score: {result['score']:.6f}\n"
-                f"ic: {result['ic']:.6f}, rankic: {result['rankic']:.6f}, "
-                f"topk_ic: {result['topk_ic']:.6f}, topk_rankic: {result['topk_rankic']:.6f}"
-                f"{Style.RESET_ALL}"
-            )
-            val_score = result["score"]
-            evals_result["valid"].append(result["loss"])
-            evals_result["valid_score"].append(val_score)
+            for k, v in train_result.items():
+                if k not in evals_result["train"]:
+                    evals_result["train"][k] = []
+                evals_result["train"][k].append(v)
+                self.logger.info(
+                    f"{Fore.RED}"
+                    f"train {k}: {v:.6f}"
+                    f"{Style.RESET_ALL}"
+                )
 
+            for k, v in valid_result.items():
+                if k not in evals_result["valid"]:
+                    evals_result["valid"][k] = []
+                evals_result["valid"][k].append(v)
+                self.logger.info(
+                    f"{Fore.GREEN}"
+                    f"valid {k}: {v:.6f}"
+                    f"{Style.RESET_ALL}"
+                )
+
+            val_score = valid_result['val_'+self.metric]
+            # 更新学习率
+            self.lr_scheduler.step(val_score)
             if val_score > best_score:
                 best_score = val_score
                 stop_steps = 0
@@ -635,8 +658,13 @@ class MIGA(Model):
         if self.use_gpu:
             torch.cuda.empty_cache()
         # 可视化损失
-        visualize_evals_result_general(evals_result, list(range(self.n_epochs)), best_epoch,
-                                       self.train_index, self.val_index, save_path, self.logger)
+        visualize_evals_result_general(evals_result,
+                                       list(range(self.n_epochs)),
+                                       best_epoch,
+                                       self.train_index, 
+                                       self.val_index,
+                                       save_path, 
+                                       self.logger)
 
     
     
@@ -647,25 +675,34 @@ class MIGA(Model):
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
         self.test_index = dl_test.get_index()
-        dl_test = IndexedSeqDataset(dl_test)
+        dl_test = IndexedSeqDataset(dl_test, news_store_path=self.news_store_path)
 
         test_loader = DataLoader(dl_test,
                                  batch_size=self.batch_size,
                                  num_workers=self.n_jobs,
-                                 collate_fn=make_collate_fn(self.news_store, self.step_len))
+                                 collate_fn=make_collate_fn())
         self.MIGA_model.eval()
         preds = []
 
         for data, news_mask in test_loader:
             data.squeeze_(0) # 去除横截面 dim
             news_mask.squeeze_(0)
-            feature = data[:, :, :self.d_feat].to(self.device)
-            news_feature = data[:, :, self.d_feat+1:].to(self.device)
-            news_mask = news_mask.to(self.device)
-
+            feature = data[:, :, :self.d_feat].to(self.device, non_blocking=True)
+            news_feature = data[:, :, self.d_feat+1:].to(self.device, non_blocking=True)
+            news_mask = news_mask.to(self.device, non_blocking=True)
+            if self.ohlc:
+                # 使用 ohlc 数据
+                # 先时序归一化+ winsor + batchnorm + fill0
+                feature = process_ohlc(feature)
+                feature = process_ohlc_batchwinsor(feature)
+                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_inf_nan_fill0(feature)            
             with torch.no_grad():
-                output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
-                pred = output['predictions'].detach().cpu().numpy()
+                if self.use_news:
+                    output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
+                else:
+                    output = self.MIGA_model(feature.float())
+                pred = output['predictions']
 
             preds.append(pred)
 
@@ -676,14 +713,14 @@ class MIGA(Model):
             raise ValueError("model is not fitted yet!")        
 
         dl = dataset.prepare(segment, col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
-        dl.config(fillna_type="ffill+bfill")
+        dl.config(fillna_type="ffill+bfill") # 可以填充
         index = dl.get_index()
-        dl = IndexedSeqDataset(dl)
+        dl = IndexedSeqDataset(dl, news_store_path=self.news_store_path)
 
         test_loader = DataLoader(dl,
                                  batch_size=self.batch_size,
                                  num_workers=self.n_jobs,
-                                 collate_fn=make_collate_fn(self.news_store, self.step_len))
+                                 collate_fn=make_collate_fn())
         self.MIGA_model.eval()
         preds = []
 
@@ -693,6 +730,13 @@ class MIGA(Model):
             feature = data[:, :, :self.d_feat].to(self.device)
             news_feature = data[:, :, self.d_feat+1:].to(self.device)
             news_mask = news_mask.to(self.device)
+            if self.ohlc:
+                # 使用 ohlc 数据
+                # 先时序归一化+ winsor + batchnorm + fill0
+                feature = process_ohlc(feature)
+                feature = process_ohlc_batchwinsor(feature)
+                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_inf_nan_fill0(feature)            
 
             with torch.no_grad():
                 if self.use_news:

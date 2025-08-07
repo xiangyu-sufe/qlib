@@ -40,6 +40,7 @@ class MIGAB1(nn.Module):
         if frozen:
             assert model_path is not None, "model_path must be specified when frozen is True"
             self.gru_price.load_state_dict(torch.load(model_path))
+        self.ln = nn.LayerNorm(hidden_dim*2)
         self.fc_out = nn.Linear(hidden_dim*2, 1)
         
     def forward(self, price: torch.Tensor, news: torch.Tensor, mask: torch.Tensor):
@@ -54,8 +55,10 @@ class MIGAB1(nn.Module):
         news_out, _ = self.gru_news(news) # N, D
         price_out = price_out[:, -1, :]
         news_out = news_out[:, -1, :]
-        out = self.fc_out(torch.cat([price_out, news_out], dim=1)) # N, 1
-        
+        price_news = torch.cat([price_out, news_out], dim=1)
+        price_news = self.ln(price_news) # layernorm 应该加到哪？
+        out = self.fc_out(price_news) # N, 1
+        out = out.squeeze()
         # 保持一致
         output = {
             'predictions': out,

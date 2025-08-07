@@ -15,6 +15,9 @@ from qlib.data.dataset.loader import StaticDataLoader
 import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
+import warnings
+
+
 
 
 root_dir = os.path.expanduser("~")
@@ -457,7 +460,7 @@ class NewsStore:
         self.dim = 1024
 
     # LRU 缓存最近 20*2000 ≈ 4 万条，可调
-    @functools.lru_cache(maxsize=60000)
+    @functools.lru_cache(maxsize=20000)
     def _fetch(self, inst, dt):
         key = f"{dt}_{inst}".encode()
         with self.env.begin() as txn:
@@ -478,36 +481,58 @@ class NewsStore:
 
 # =============  定义 collate_fn
 
-def make_collate_fn(news_store, step_len, dim_news=1024):
-    """
-    factory 写法，使 news_store 只实例化一次
-    """
+def make_collate_fn():
     def collate_fn(batch):
-        insts, dts_seqs, price = zip(*batch)
-        price = torch.stack(price)                     # (B, N, T, Dq)
+        # batch中每个元素是 tuple: (inst(s), dts_seq(s), price_feat, news, mask)
+        insts, dts_seqs, price_feats, news_seqs, masks = zip(*batch)
 
-        news_list, mask_list = [], []
-        for ins, dts in zip(insts, dts_seqs):
-            news, m = _fetch_news_seq(news_store, ins, dts, dim_news)
-            news_list.append(news)
-            mask_list.append(m)
-        news   = torch.stack(news_list)                # (N, T, Dn)
-        n_mask = torch.stack(mask_list)                # ( N, T)  BoolTensor
-        # 过滤掉一条新闻都没有的股票
-        # N, T, D = price.shape
-        # D_n = news.shape[-1]
-        # valid_flat = ~(n_mask.all(dim=-1))  # shape: [N]，True 表示这条样本“有有效新闻”
-        # price_valid = price[valid_flat].view(1, -1, T, D)  # (N', T, D)
-        # news_valid = news[valid_flat].view(1, -1, T, D_n)    # (N', T, Dn)
-        # mask_valid = n_mask[valid_flat].view(1, -1, T)    # (N', T)  
-        
-        # 不过滤
-        price_valid = price
-        news_valid = news 
-        mask_valid = n_mask 
-        return price_valid, news_valid, mask_valid   # <-- 多返回一个 mask
-    
+        price = torch.stack(price_feats)            # (B, N, T, Dq)
+        # news_seqs: list of tensor, stack成 (B, T, Dn)
+        news = torch.stack(news_seqs)
+        mask = torch.stack(masks)
+
+        return price, news, mask
     return collate_fn
+
+# def make_collate_fn(news_store_path, step_len, dim_news=1024):
+#     """
+#     factory 写法，使 news_store 只实例化一次
+#     每个 worker 单独初始化自己的 NewsStore
+#     """
+#     news_store_holder = {"store": None}  # 使用闭包懒加载
+
+#     def get_news_store():
+#         if news_store_holder["store"] is None:
+#             news_store_holder["store"] = NewsStore(news_store_path)
+#         return news_store_holder["store"]
+    
+#     def collate_fn(batch):
+#         insts, dts_seqs, price = zip(*batch)
+#         price = torch.stack(price)                     # (B, N, T, Dq)
+
+#         news_list, mask_list = [], []
+#         news_store = get_news_store()  # 每个 worker 内部初始化一次
+#         for ins, dts in zip(insts, dts_seqs):
+#             news, m = _fetch_news_seq(news_store, ins, dts, dim_news)
+#             news_list.append(news)
+#             mask_list.append(m)
+#         news   = torch.stack(news_list)                # (N, T, Dn)
+#         n_mask = torch.stack(mask_list)                # ( N, T)  BoolTensor
+#         # 过滤掉一条新闻都没有的股票
+#         # N, T, D = price.shape
+#         # D_n = news.shape[-1]
+#         # valid_flat = ~(n_mask.all(dim=-1))  # shape: [N]，True 表示这条样本“有有效新闻”
+#         # price_valid = price[valid_flat].view(1, -1, T, D)  # (N', T, D)
+#         # news_valid = news[valid_flat].view(1, -1, T, D_n)    # (N', T, Dn)
+#         # mask_valid = n_mask[valid_flat].view(1, -1, T)    # (N', T)  
+        
+#         # 不过滤
+#         price_valid = price
+#         news_valid = news 
+#         mask_valid = n_mask 
+#         return price_valid, news_valid, mask_valid   # <-- 多返回一个 mask
+    
+#     return collate_fn
 
 def _fetch_news_seq(store, inst, dts_seq, dim_news):
     # inst     单个 instrument
@@ -562,12 +587,16 @@ class IndexedSeqDataset(torch.utils.data.Dataset):
     """
     Wrap a TSDatasetH/TSDataSampler to also return (instrument, datetime_seq).
     """
-    def __init__(self, tsds: TSDatasetH):
+    def __init__(self, tsds: TSDatasetH, news_store_path, dim_news=1024):
         # If the passed object is a TSDatasetH instance, use its underlying
         # TSDataSampler (ts_sampler) which implements `__getitem__`; otherwise
         # assume the object itself is already a sampler.
         self.ds = tsds.ts_sampler if hasattr(tsds, "ts_sampler") else tsds
         self.step_len = tsds.step_len
+        # Delay NewsStore creation to the worker process to avoid lmdb fork issues
+        self.news_store_path = news_store_path
+        self.news_store = None  # will be lazily created in __getitem__ per worker
+        self.dim_news = dim_news
 
     def __len__(self):
         return len(self.ds)
@@ -579,23 +608,38 @@ class IndexedSeqDataset(torch.utils.data.Dataset):
         price_feat = self.ds[idx]  # TSDataSampler 支持 list/ndarray
 
         if isinstance(idx, (list, np.ndarray)):
-            insts, dts_seqs = [], []
+            insts, dts_seqs, news_list, mask_list = [], [], [], []
             for single_idx in idx:
                 i, j = self.ds._get_row_col(single_idx)
                 rows = list(range(max(i - self.step_len + 1, 0), i + 1))
                 rows = [None] * (self.step_len - len(rows)) + rows
                 dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
                 inst = self.ds.idx_df.columns[j]
+                
+                # Lazily create NewsStore inside worker process
+                if self.news_store is None:
+                    self.news_store = NewsStore(self.news_store_path)
+                news, mask = _fetch_news_seq(self.news_store, inst, dts, self.dim_news)
                 insts.append(inst)
                 dts_seqs.append(dts)
-            return insts, dts_seqs, torch.tensor(price_feat)
+                news_list.append(news)
+                mask_list.append(mask)
+            
+            return insts, dts_seqs, torch.tensor(price_feat), news_list, mask_list
         else:
             i, j = self.ds._get_row_col(idx)
             rows = list(range(max(i - self.step_len + 1, 0), i + 1))
             rows = [None] * (self.step_len - len(rows)) + rows
             dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
             inst = self.ds.idx_df.columns[j]
-            return inst, dts, torch.tensor(price_feat)
+
+            # Lazily create NewsStore inside worker process
+            if self.news_store is None:
+                self.news_store = NewsStore(self.news_store_path)
+ 
+            news, mask = _fetch_news_seq(self.news_store, inst, dts, self.dim_news)
+
+            return inst, dts, torch.tensor(price_feat), news, mask
         
         
     
@@ -625,6 +669,22 @@ def process_ohlc(ohlc: torch.Tensor):
     ohlc[:, :, 5] = ohlc[:, :, 5] / ohlc[:, -1:, 5] 
     
     return ohlc
+
+def process_ohlc_cuda(x: torch.Tensor):
+    """
+    x: (B, T, 6)  GPU Tensor, float32
+    列 0~4 : OHLCV 中 OHLC+preclose
+    列 5   : volume
+    用最后一个时刻做归一化
+    """
+    # 价格归一化
+    last_price = x[:, -1:, :1]          # (B,1,1)
+    x[:, :, :5].div_(last_price)        # 原地除法，显存零拷贝  
+    # 成交量归一化
+    last_vol = x[:, -1:, 5:6]           # (B,1,1)
+    x[:, :, 5:6].div_(last_vol)
+    
+    return x
 
 # def process_ohlc_batchwinsor(data: torch.Tensor):
 #     # ohlc: (N, T, 6)
@@ -663,6 +723,8 @@ def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
 
     return out
     
+    
+    
 def torch_nanstd(o, dim, keepdim=False):
     # 计算均值
     mean = torch.nanmean(o, dim=dim, keepdim=True)
@@ -674,7 +736,6 @@ def process_ohlc_batchnorm(data: torch.Tensor):
     N_batch, T, D = data.shape
     assert D >= 6, "输入特征维度应≥6"
 
-    out = data.clone()
     reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
     
     mean = torch.nanmean(reshaped, dim=0)
@@ -682,19 +743,14 @@ def process_ohlc_batchnorm(data: torch.Tensor):
     
     # 标准化处理并重塑回原始形状
     normalized = (reshaped - mean) / std
-    out[:, :, :6] = normalized.reshape(N_batch, T, 6)
-    
-    return out
-
-def process_ohlc_inf_nan_fill0(data: torch.Tensor):
-    # ohlc: (N, T, 6)
-    
-    ohlc = data[:, :, :6]
-    ohlc[torch.isinf(ohlc)] = torch.nan
-    ohlc[torch.isnan(ohlc)] = 0
-    data[:, :, :6] = ohlc
+    data[:, :, :6] = normalized.reshape(N_batch, T, 6)
     
     return data
+
+def process_ohlc_inf_nan_fill0_cuda(x: torch.Tensor):
+    mask = torch.isfinite(x)
+    x = torch.where(mask, x, torch.zeros_like(x))
+    return x
 
 def process_ohlc_minmax(data: torch.Tensor):
     # ohlc: (N, T, 6)
