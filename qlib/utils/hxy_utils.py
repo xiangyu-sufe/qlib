@@ -677,6 +677,7 @@ def process_ohlc_cuda(x: torch.Tensor):
     列 5   : volume
     用最后一个时刻做归一化
     """
+    assert x.is_cuda, "input must be on GPU"
     # 价格归一化
     last_price = x[:, -1:, :1]          # (B,1,1)
     x[:, :, :5].div_(last_price)        # 原地除法，显存零拷贝  
@@ -704,9 +705,9 @@ def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
     返回:
       winsorize 后的 data，形状不变
     """
+    assert data.is_cuda, "input must be on GPU"
     N_batch, T, D = data.shape
     assert D >= 6, "输入特征维度应≥6"
-    out = data.clone()
     reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
     
     medians = torch.nanmedian(reshaped, dim=0).values  # (6,)
@@ -719,9 +720,9 @@ def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
     # 广播 clip
     clipped = torch.clamp(reshaped, lower, upper)
     
-    out[:, :, :6] = clipped.reshape(N_batch, T, 6)
+    data[:, :, :6] = clipped.reshape(N_batch, T, 6)
 
-    return out
+    return data
     
     
     
@@ -733,6 +734,7 @@ def torch_nanstd(o, dim, keepdim=False):
     return result
 
 def process_ohlc_batchnorm(data: torch.Tensor):
+    assert data.is_cuda, "input must be on GPU"
     N_batch, T, D = data.shape
     assert D >= 6, "输入特征维度应≥6"
 

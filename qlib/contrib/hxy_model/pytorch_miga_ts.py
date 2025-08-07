@@ -35,7 +35,7 @@ class MIGAB1(nn.Module):
         )
         self.padding_method = padding_method
         if self.padding_method == 'learn':
-            self.padding = nn.Parameter(torch.zeros(1, hidden_dim))
+            self.padding = nn.Parameter(torch.zeros(1, news_dim))
             nn.init.xavier_uniform_(self.padding)
         if frozen:
             assert model_path is not None, "model_path must be specified when frozen is True"
@@ -45,9 +45,9 @@ class MIGAB1(nn.Module):
         
     def forward(self, price: torch.Tensor, news: torch.Tensor, mask: torch.Tensor):
         if self.padding_method == 'zero':
-            news[mask.unsqueeze(-1).expand_as(news)] = 0
-        elif self.paddding_method == 'learn':
-            news[mask.unsqueeze(-1).expand_as(news)] = self.padding
+            news[mask] = 0
+        elif self.padding_method == 'learn':
+            news[mask] = self.padding
         else:
             raise ValueError(f"Unknown padding method: {self.padding_method}")
         

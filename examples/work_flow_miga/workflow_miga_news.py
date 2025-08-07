@@ -79,7 +79,7 @@ if __name__ == "__main__":
     parser.add_argument("--omega_after", type=float, default=1.0, help="Omega after step epoch")
     args = parser.parse_args()
     save_path = args.save_path
-    save_path = os.path.join(f'seed{args.onlyrun_seed_id}', save_path)
+    save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
     os.makedirs(save_path, exist_ok=True)
 
     root_dir = os.path.expanduser('~')

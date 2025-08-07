@@ -36,9 +36,9 @@ from ..loss.ndcg import (compute_lambda_gradients, calculate_ndcg_optimized, ran
 from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss, topk_return
 from qlib.utils.color import *
 from qlib.utils.hxy_utils import (
-    compute_grad_norm, compute_layerwise_grad_norm, process_ohlc,
+    compute_grad_norm, compute_layerwise_grad_norm, process_ohlc_cuda,
     apply_mask_preserve_norm, process_ohlc_batchnorm, scale_preserve_sign_torch,
-    process_ohlc_minmax, process_ohlc_inf_nan_fill0, process_ohlc_batchwinsor,
+    process_ohlc_minmax, process_ohlc_inf_nan_fill0_cuda, process_ohlc_batchwinsor,
     visualize_evals_result_general, 
 )
 from qlib.utils.timing import timing
@@ -296,10 +296,10 @@ class GRUNDCG(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)
                 # 或者 对 volume winsor 后  minmax 归一化 + ffill + bfill
             pred = self.GRU_model(feature.float())
             # 这里使用NDCG @k来计算损失
@@ -410,10 +410,10 @@ class GRUNDCG(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
                 # 计算RankNet交叉熵损失（仅用于观察）
@@ -548,10 +548,10 @@ class GRUNDCG(Model):
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, :self.d_feat].to(self.device)
             if self.ohlc:
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float()).detach().cpu().numpy()
 

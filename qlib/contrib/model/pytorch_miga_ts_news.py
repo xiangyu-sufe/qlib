@@ -408,6 +408,10 @@ class MIGA(Model):
         
 
     def train_epoch(self, data_loader):
+        import time
+        torch.cuda.synchronize()        # 开始前清空队列
+        start = time.time()
+        
         self.MIGA_model.train()
         # Debug模式下记录每个batch的梯度信息
         result = defaultdict(list)
@@ -457,7 +461,8 @@ class MIGA(Model):
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.MIGA_model.parameters(), 3.0)
             self.train_optimizer.step()
-
+            
+            
             if self.debug:
                 # 计算梯度范数
                 grad_norm = compute_grad_norm(self.MIGA_model)
@@ -494,7 +499,9 @@ class MIGA(Model):
 
         for name in self.display_list:
             result_agg['train_'+name] = float(np.mean(result['train_'+name]))
-        
+
+        torch.cuda.synchronize()        # 确保 GPU 全部算完
+        print(f"epoch {i} wall-time: {time.time()-start:.2f}s")
         return result_agg
     
 
