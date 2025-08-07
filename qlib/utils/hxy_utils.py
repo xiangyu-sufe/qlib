@@ -519,7 +519,7 @@ def _fetch_news_seq(store, inst, dts_seq, dim_news):
             st = dt
             break
     # 转为自然日
-    dts_seq = pd.date_range(st, et, freq='D')
+    dts_seq = list(pd.date_range(st, et, freq='D'))
     if isinstance(inst, list):
         for ins, dts in zip(inst, dts_seq):
             for dt in dts:

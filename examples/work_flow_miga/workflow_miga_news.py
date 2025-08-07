@@ -40,7 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--step_len", type=int, default=20, help="Step length")
     parser.add_argument("-v", "--version", type=int, default=1, help="Version of the model")
     parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
-    
+    parser.add_argument("--n_jobs", type=int, default=0, help="Number of jobs for parallel processing")
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
@@ -213,7 +213,7 @@ if __name__ == "__main__":
                     "early_stop": args.early_stop,
                     "metric": "ic",
                     "loss": "miga",
-                    "n_jobs": 24,
+                    "n_jobs": args.n_jobs,
                     "GPU": 0,
                     "lambda_reg": args.lambda_reg, # 损失参数
                     "omega": args.omega,
@@ -225,6 +225,7 @@ if __name__ == "__main__":
                     "step_len": args.step_len,
                     "news_store": news_store,
                     "use_news" : args.use_news,
+                    "ohlc": args.ohlc,
                     "padding_method": args.padding_method,
                     "version": "B" + str(args.version),
                 },

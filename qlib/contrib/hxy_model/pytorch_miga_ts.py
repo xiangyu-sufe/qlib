@@ -33,6 +33,7 @@ class MIGAB1(nn.Module):
             batch_first=True,
             dropout=dropout,
         )
+        self.padding_method = padding_method
         if self.padding_method == 'learn':
             self.padding = nn.Parameter(torch.zeros(1, hidden_dim))
             nn.init.xavier_uniform_(self.padding)
@@ -43,14 +44,24 @@ class MIGAB1(nn.Module):
         
     def forward(self, price: torch.Tensor, news: torch.Tensor, mask: torch.Tensor):
         if self.padding_method == 'zero':
-            news[mask.unsqueeze(-1)] = 0
+            news[mask.unsqueeze(-1).expand_as(news)] = 0
         elif self.paddding_method == 'learn':
-            news[mask.unsqueeze(-1)] = self.padding
+            news[mask.unsqueeze(-1).expand_as(news)] = self.padding
         else:
             raise ValueError(f"Unknown padding method: {self.padding_method}")
         
-        price_out = self.gru_price(price) # N , D
-        news_out = self.gru_news(news) # N, D
+        price_out, _ = self.gru_price(price) # N , D
+        news_out, _ = self.gru_news(news) # N, D
+        price_out = price_out[:, -1, :]
+        news_out = news_out[:, -1, :]
         out = self.fc_out(torch.cat([price_out, news_out], dim=1)) # N, 1
         
-        return out
+        # 保持一致
+        output = {
+            'predictions': out,
+            'routing_weights': None,
+            'hidden_representations': None,
+            'top_k_indices': None,
+            'routing_weights_flat': None,
+        }
+        return output

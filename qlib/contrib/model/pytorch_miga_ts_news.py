@@ -6,7 +6,7 @@ from __future__ import division
 from __future__ import print_function
 from collections import defaultdict
 import warnings
-from typing import Dict, List, Tuple, Optional, DefaultDict
+from typing import Dict, List, Tuple, Optional, DefaultDict, Union
 
 import sys
 import logging
@@ -41,7 +41,7 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   process_ohlc,
                                   process_ohlc_batchwinsor,
                                   process_ohlc_batchnorm,
-                                  process_ohlc_inf_nan_fill0,
+                                  process_ohlc_inf_nan_fill0, visualize_evals_result_general,
                                   )
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
     MIGAB1,
@@ -116,7 +116,7 @@ class MIGA(Model):
         early_stop=20,
         loss="miga",
         optimizer="adam",
-        n_jobs=10,
+        n_jobs=0,
         GPU=0,
         seed=None,
         lambda_reg=0.1,
@@ -124,6 +124,8 @@ class MIGA(Model):
         epsilon=1,
         omega_scheduler=None,
         omega_decay=0.96,
+        omega_step=None,
+        omega_after=None,
         debug=False,
         save_path=None,
         step_len=1,
@@ -132,6 +134,7 @@ class MIGA(Model):
         version=None,
         padding_method="zero",
         ohlc=False,
+        display_list=['loss', 'ic', 'rankic', 'ndcg', 'topk_return'],
         **kwargs,
     ):
         # Set logger.
@@ -173,6 +176,7 @@ class MIGA(Model):
         self.use_news = use_news
         self.padding_method = padding_method
         self.ohlc = ohlc
+        self.display_list = display_list
         if  self.loss == "miga":
             self.omega = omega
             self.epsilon = epsilon
@@ -344,7 +348,7 @@ class MIGA(Model):
         loss = weight * (pred - label) ** 2
         return torch.mean(loss)
 
-    def loss_fn(self, pred, label, hidden,weight=None):
+    def loss_fn(self, pred, label, hidden=None, weight=None)->Union[torch.Tensor, Dict[str, torch.Tensor]]:
         mask = ~torch.isnan(label)
         if self.loss == "miga": 
             return self.Miga_loss(pred[mask], label[mask], hidden)
@@ -380,14 +384,12 @@ class MIGA(Model):
 
     def train_epoch(self, data_loader):
         self.MIGA_model.train()
-        tot_loss_list = []
-        result: DefaultDict[str, np.floating] = defaultdict(lambda: np.float64(np.nan))        
-        epoch_grad_norms = []
-        epoch_grad_norms_layer = []
-        mse_loss_list = []
-        pairwise_loss_list = []
-        expert_loss_list = []
-        router_loss_list = []
+        # Debug模式下记录每个batch的梯度信息
+        result = defaultdict(list)
+        result_agg = defaultdict(lambda : np.nan)
+        if self.debug:
+            epoch_grad_norms = []
+            epoch_grad_norms_layer = []
 
         total_len = 0
         count = 0
@@ -417,46 +419,39 @@ class MIGA(Model):
                 output = self.MIGA_model(feature)
             pred = output['predictions']
             hidden_representations = output['hidden_representations']
-            
-            loss_dict = self.loss_fn(pred, label, hidden_representations,)
+            if self.loss == "miga":
+                loss_dict = self.loss_fn(pred, label, hidden_representations,)
+                if isinstance(loss_dict, dict):
+                    loss = loss_dict['total_loss']
+                else:
+                    loss = loss_dict
+            else:
+                loss = self.loss_fn(pred, label)
             self.train_optimizer.zero_grad()
-            loss = loss_dict['total_loss']
             loss.backward()
-            
             torch.nn.utils.clip_grad_value_(self.MIGA_model.parameters(), 3.0)
             self.train_optimizer.step()
 
             if self.debug:
-                # 计算MSE 和 pairwise loss 相对大小
-                with torch.no_grad():
-                    expert_loss = loss_dict['expert_loss'].item()
-                    router_loss = loss_dict['router_loss'].item()
-                    mse_loss = mse(pred, label).item()
-                    pr_loss = pairwise_loss(pred, label).item()
-                    mse_loss_list.append(mse_loss)
-                    pairwise_loss_list.append(pr_loss)
-                    expert_loss_list.append(expert_loss)
-                    router_loss_list.append(router_loss)
                 # 计算梯度范数
                 grad_norm = compute_grad_norm(self.MIGA_model)
                 grad_norm_layer = compute_layerwise_grad_norm(self.MIGA_model)
                 epoch_grad_norms.append(grad_norm)
                 epoch_grad_norms_layer.append(grad_norm_layer)
 
-            tot_loss_list.append(loss_dict['total_loss'].item())
             total_len += len(data)
             count += 1
             pbar.set_postfix({"Average Length": total_len / count})
+            # 记录损失
+            for name in self.display_list:
+                result['train_'+name].append(self.metric_fn(pred, label, name = name))
 
-        result["train"] = np.mean(tot_loss_list)
-
+        # Debug模式下记录梯度信息
         if self.debug:
-            self.logger.debug(f"{Fore.RED} MSE Loss: {np.mean(mse_loss_list):.6f}, Pairwise Loss: {np.mean(pairwise_loss_list):.6f}{Style.RESET_ALL}")
-            self.logger.debug(f"{Fore.RED} Total Loss: {np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
-            self.logger.debug(f"{Fore.RED}Expert Loss: {np.mean(expert_loss_list):.6f}, Expert Loss Ratio: {np.mean(expert_loss_list)/np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
-            self.logger.debug(f"{Fore.RED} Router Loss: {np.mean(router_loss_list):.6f}, Router Loss Ratio: {np.mean(router_loss_list)/np.mean(tot_loss_list):.6f}{Style.RESET_ALL}")
+            # 打印epoch级别的梯度统计
             avg_grad_norm = np.mean(epoch_grad_norms)
-            self.logger.debug(f"{Fore.RED}Epoch Avg Grad Norm: {avg_grad_norm:.6f}{Style.RESET_ALL}")
+            print(f"Epoch Avg Grad Norm: {avg_grad_norm:.6f}")
+
             # 计算每层的平均梯度范数
             if epoch_grad_norms_layer:
                 layer_names = epoch_grad_norms_layer[0].keys()
@@ -468,20 +463,19 @@ class MIGA(Model):
                         else:
                             layer_norms.append(batch_layer[layer_name])
                     avg_layer_norm = np.mean(layer_norms)
-                    self.logger.debug(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}, Ratio: {avg_layer_norm/avg_grad_norm:.6f}")
+                    print(f"Epoch Avg {layer_name} Grad Norm: {avg_layer_norm:.6f}, \
+                          Epoch Avg {layer_name} Grad Norm: Ratio: {avg_layer_norm/avg_grad_norm:.6f}")
 
-        return result
+        for name in self.display_list:
+            result_agg['train_'+name] = float(np.mean(result['train_'+name]))
+        
+        return result_agg
     
 
     def test_epoch(self, data_loader):
         self.MIGA_model.eval()
-
-        scores = []
-        losses = []
-        ic_scores = []
-        rankic_scores = []
-        topk_ic_scores = []
-        topk_rankic_scores = []
+        result = defaultdict(list)
+        result_agg = defaultdict(lambda : np.nan)
         
         total_len = 0
         count = 0
@@ -491,48 +485,35 @@ class MIGA(Model):
             data.squeeze_(0) 
             news.squeeze_(0)
             news_mask.squeeze_(0)
-            price_feature = data[:,:, :self.d_feat].to(self.device)
+            feature = data[:,:, :self.d_feat].to(self.device)
             label = data[:, -1, self.d_feat].to(self.device)
             news_feature = news.to(self.device)
             news_mask = news_mask.to(self.device)
-            
+            if self.ohlc:
+                # 使用 ohlc 数据
+                # 先时序归一化+ winsor + batchnorm + fill0
+                feature = process_ohlc(feature)
+                feature = process_ohlc_batchwinsor(feature)
+                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_inf_nan_fill0(feature)            
             with torch.no_grad():
                 if self.use_news:
-                    output = self.MIGA_model(price_feature.float(), news_feature.float(), news_mask)
+                    output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
                 else:
-                    output = self.MIGA_model(price_feature.float())
+                    output = self.MIGA_model(feature.float())
                 pred = output['predictions']
                 hidden_representations = output['hidden_representations']
-                loss_dict = self.loss_fn(pred, label, hidden_representations)
-                loss = loss_dict['total_loss'].item()
-                expert_loss = loss_dict['expert_loss'].item()
-                router_loss = loss_dict['router_loss'].item()
-                # score = self.metric_fn(pred, label, name = 'loss') # 暂时没想好是否应该用这个做 score
-                ic_score = self.metric_fn(pred, label, "ic")
-                score = ic_score 
-                rankic_score = self.metric_fn(pred, label, "rankic")
-                topk_ic_score = self.metric_fn(pred, label, "topk_ic", topk=5)
-                topk_rankic_score = self.metric_fn(pred, label, "topk_rankic", topk=5)
 
-                losses.append(loss)
-                scores.append(score)
-                ic_scores.append(ic_score)
-                rankic_scores.append(rankic_score)
-                topk_ic_scores.append(topk_ic_score)
-                topk_rankic_scores.append(topk_rankic_score)
                 total_len += len(data)
                 count += 1
                 pbar.set_postfix({"Average Length": total_len / count})
+            for name in self.display_list:
+                result['val_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
+        
+        for name in self.display_list:
+            result_agg['val_'+name] = float(np.mean(result['val_'+name]))
 
-        result: DefaultDict[str, np.floating] = defaultdict(lambda: np.float64(np.nan))        
-        result["loss"] = np.mean(losses)
-        result["score"] = np.mean(scores)
-        result["ic"] = np.mean(ic_scores)
-        result["rankic"] = np.mean(rankic_scores)
-        result["topk_ic"] = np.mean(topk_ic_scores)
-        result["topk_rankic"] = np.mean(topk_rankic_scores)
-
-        return result
+        return result_agg
     
 
 
@@ -636,8 +617,9 @@ class MIGA(Model):
         if self.use_gpu:
             torch.cuda.empty_cache()
         # 可视化损失
-        self.visualize_evals_result(evals_result)        
-        
+        visualize_evals_result_general(evals_result, list(range(self.n_epochs)), best_epoch,
+                                       self.train_index, self.val_index, save_path, self.logger)
+            
     
     
     def predict(self, dataset):
@@ -705,183 +687,7 @@ class MIGA(Model):
 
         return pd.Series(np.concatenate(preds), index=index)
 
-    def visualize_evals_result(self, evals_result, save_path=None, train_index=None, val_index=None, test_index=None):
-        """
-        重写可视化函数，专门为MIGA模型设计
-        训练和验证损失分开画，每个图显示total、expert、router三条曲线
-        新增：在图下方显示训练集、验证集、测试集的时间区间。
-        """
-        import matplotlib.pyplot as plt
-        import os
 
-        def _get_time_range(index):
-            if index is None:
-                return "N/A"
-            if hasattr(index, "get_level_values"):
-                try:
-                    dates = index.get_level_values("datetime")
-                except Exception:
-                    dates = index
-            else:
-                dates = index
-            if len(dates) == 0:
-                return "N/A"
-            return f"{str(min(dates))[:10]} ~ {str(max(dates))[:10]}"
-
-        train_range = _get_time_range(train_index)
-        val_range = _get_time_range(val_index)
-        test_range = _get_time_range(test_index)
-
-        best_epoch = evals_result.get("best_epoch", None)
-
-        # 检查数据是否存在
-        has_train = "train" in evals_result and len(evals_result["train"]) > 0
-        has_valid = "valid" in evals_result and len(evals_result["valid"]) > 0
-        has_train_score = "train_score" in evals_result and len(evals_result["train_score"]) > 0
-        has_valid_score = "valid_score" in evals_result and len(evals_result["valid_score"]) > 0
-
-        if not (has_train or has_valid):
-            print("No loss data to visualize")
-            return
-
-        # 创建子图 - 2x2布局
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-
-        # 第一个子图：训练损失（双y轴）
-        if has_train:
-            epochs = range(len(evals_result["train"]))
-
-            # 左y轴：Total Loss 和 Expert Loss
-            ax1.plot(epochs, evals_result["train"], label="Total Loss", color='blue', linewidth=2)
-            if "train_expert" in evals_result and len(evals_result["train_expert"]) > 0:
-                ax1.plot(epochs, evals_result["train_expert"], label="Expert Loss", color='green', linewidth=2)
-
-            ax1.set_xlabel("Epoch")
-            ax1.set_ylabel("Total & Expert Loss", color='blue')
-            ax1.tick_params(axis='y', labelcolor='blue')
-            ax1.grid(True, alpha=0.3)
-
-            # 右y轴：Router Loss
-            if "train_router" in evals_result and len(evals_result["train_router"]) > 0:
-                ax1_right = ax1.twinx()
-                ax1_right.plot(epochs, evals_result["train_router"], label="Router Loss", color='orange', linewidth=2)
-                ax1_right.set_ylabel("Router Loss", color='orange')
-                ax1_right.tick_params(axis='y', labelcolor='orange')
-
-            # 合并图例
-            lines1, labels1 = ax1.get_legend_handles_labels()
-            if "train_router" in evals_result and len(evals_result["train_router"]) > 0:
-                lines2, labels2 = ax1_right.get_legend_handles_labels()
-                ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-            else:
-                ax1.legend()
-
-        ax1.set_title("Training Loss Components")
-
-        # 第二个子图：验证损失（双y轴）
-        if has_valid:
-            epochs = range(len(evals_result["valid"]))
-
-            # 左y轴：Total Loss 和 Expert Loss
-            ax2.plot(epochs, evals_result["valid"], label="Total Loss", color='red', linewidth=2)
-            if "valid_expert" in evals_result and len(evals_result["valid_expert"]) > 0:
-                ax2.plot(epochs, evals_result["valid_expert"], label="Expert Loss", color='darkgreen', linewidth=2)
-
-            # 标记最佳epoch（在Total Loss上）
-            if best_epoch is not None and best_epoch < len(evals_result["valid"]):
-                ax2.scatter(
-                    best_epoch,
-                    evals_result["valid"][best_epoch],
-                    label="Best Epoch",
-                    color='purple',
-                    s=100,
-                    zorder=10
-                )
-
-            ax2.set_xlabel("Epoch")
-            ax2.set_ylabel("Total & Expert Loss", color='red')
-            ax2.tick_params(axis='y', labelcolor='red')
-            ax2.grid(True, alpha=0.3)
-
-            # 右y轴：Router Loss
-            if "valid_router" in evals_result and len(evals_result["valid_router"]) > 0:
-                ax2_right = ax2.twinx()
-                ax2_right.plot(epochs, evals_result["valid_router"], label="Router Loss", color='darkorange', linewidth=2)
-                ax2_right.set_ylabel("Router Loss", color='darkorange')
-                ax2_right.tick_params(axis='y', labelcolor='darkorange')
-
-            # 合并图例
-            lines1, labels1 = ax2.get_legend_handles_labels()
-            if "valid_router" in evals_result and len(evals_result["valid_router"]) > 0:
-                lines2, labels2 = ax2_right.get_legend_handles_labels()
-                ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-            else:
-                ax2.legend()
-
-        ax2.set_title("Validation Loss Components")
-
-        # 第三个子图：训练评分
-        if has_train_score:
-            epochs = range(len(evals_result["train_score"]))
-            ax3.plot(epochs, evals_result["train_score"], label="Train Score (IC)", color='blue', linewidth=2)
-
-        ax3.set_xlabel("Epoch")
-        ax3.set_ylabel("Score (IC)")
-        ax3.set_title("Training Score")
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-        # 第四个子图：验证评分
-        if has_valid_score:
-            epochs = range(len(evals_result["valid_score"]))
-            ax4.plot(epochs, evals_result["valid_score"], label="Valid Score (IC)", color='red', linewidth=2)
-
-            # 标记最佳epoch
-            if best_epoch is not None and best_epoch < len(evals_result["valid_score"]):
-                ax4.scatter(
-                    best_epoch,
-                    evals_result["valid_score"][best_epoch],
-                    label="Best Epoch",
-                    color='purple',
-                    s=100,
-                    zorder=10
-                )
-
-        ax4.set_xlabel("Epoch")
-        ax4.set_ylabel("Score (IC)")
-        ax4.set_title("Validation Score")
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
-
-        # 调整子图间距
-        plt.tight_layout()
-
-        # 添加总标题
-        if best_epoch is not None:
-            title_info = f"MIGA Training Results - Best Epoch: {best_epoch + 1}"
-            if has_valid:
-                title_info += f" (Val Loss: {evals_result['valid'][best_epoch]:.4f})"
-            if has_valid_score:
-                title_info += f" (Val Score: {evals_result['valid_score'][best_epoch]:.4f})"
-            fig.suptitle(title_info, fontsize=16, y=0.98)
-        else:
-            fig.suptitle("MIGA Training Results", fontsize=16, y=0.98)
-
-        # 在图下方添加时间区间
-        fig.text(0.5, 0.01, f"Train: {train_range}    Valid: {val_range}    Test: {test_range}", ha='center', fontsize=12)
-
-        # 保存图片
-        if save_path is not None:
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            plt.savefig(
-                os.path.join(save_path, "miga_training_results.png"),
-                dpi=300,
-                bbox_inches='tight'
-            )
-            print(f"📊 MIGA训练结果图已保存到: {os.path.join(save_path, 'miga_training_results.png')}")
-
-        plt.close()
 
 
 
