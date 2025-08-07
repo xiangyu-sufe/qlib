@@ -41,10 +41,10 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   compute_layerwise_grad_norm,
                                   IndexedSeqDataset,
                                   make_collate_fn,
-                                  process_ohlc,
+                                  process_ohlc_cuda,
                                   process_ohlc_batchwinsor,
                                   process_ohlc_batchnorm,
-                                  process_ohlc_inf_nan_fill0, visualize_evals_result_general,
+                                  process_ohlc_inf_nan_fill0_cuda, visualize_evals_result_general,
                                   )
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
     MIGAB1,
@@ -434,10 +434,10 @@ class MIGA(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)
             if self.use_news:
                 output = self.MIGA_model(feature, news_feature, news_mask)
             else:
@@ -518,10 +518,10 @@ class MIGA(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)            
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)            
             with torch.no_grad():
                 if self.use_news:
                     output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
@@ -693,10 +693,10 @@ class MIGA(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)            
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)            
             with torch.no_grad():
                 if self.use_news:
                     output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
@@ -733,10 +733,10 @@ class MIGA(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc(feature)
+                feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
-                feature = process_ohlc_inf_nan_fill0(feature)            
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)            
 
             with torch.no_grad():
                 if self.use_news:
