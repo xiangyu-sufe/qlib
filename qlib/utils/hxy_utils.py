@@ -715,6 +715,22 @@ def process_ohlc_minmax(data: torch.Tensor):
     )
     return ohlc
 
+def forward_fill(t: torch.Tensor) -> torch.Tensor:
+    # 前向填充
+    n_dim, t_dim = t.shape
+    # Generate indices range
+    rng = torch.arange(t_dim)
+    
+    rng_2d = rng.unsqueeze(0).repeat(n_dim, 1)
+    # Replace indices to zero for elements that equal zero
+    rng_2d[t == 0] = 0
+    
+    # Forward fill of indices range so all zero elements will be replaced with previous non-zero index.
+    idx = rng_2d.cummax(1).values
+    t = t[torch.arange(n_dim)[:, None], idx]
+    return t
+
+
 # ========================================= 可视化曲线部分
 
 def visualize_evals_result_general(

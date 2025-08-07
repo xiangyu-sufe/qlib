@@ -13,7 +13,7 @@ from qlib.contrib.report import analysis_model, analysis_position
 from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.utils.hxy_utils import (
     get_label, prepare_task_pool, read_alpha64, read_minute, read_label,
-    NewsStore, make_collate_fn, write_lmdb, IndexedSeqDataset
+    NewsStore, make_collate_fn, write_lmdb, IndexedSeqDataset, read_ohlc,
 )
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
@@ -38,11 +38,13 @@ if __name__ == "__main__":
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
     parser.add_argument("--step_len", type=int, default=20, help="Step length")
+    parser.add_argument("-v", "--version", type=int, default=1, help="Version of the model")
+    parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
+    
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
-
     # 时间范围参数
     parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2024-09-30", help="End time for data")
@@ -50,17 +52,21 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
     parser.add_argument("--lambda_reg", type=float, default=1)
+    parser.add_argument("--batch_size", type=int, default=5000)
+    parser.add_argument("--n_epochs", type=int, default=100)
+    parser.add_argument("--early_stop", type=int, default=10)
     # MIGA模型结构参数
     parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
     parser.add_argument("--hidden_dim", type=int, default=64, help="Hidden dimension for router (auto-calculated as num_groups * num_experts_per_group if not specified)")
+    parser.add_argument("--num_layers", type=int, default=2, help="Number of layers")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate")
     parser.add_argument("--num_groups", type=int, default=4, help="Number of expert groups")
     parser.add_argument("--num_experts_per_group", type=int, default=4, help="Number of experts per group")
     parser.add_argument("--num_heads", type=int, default=1, help="Number of attention heads")
     parser.add_argument("--top_k", type=int, default=4, help="Top-k experts selection")
     parser.add_argument("--expert_output_dim", type=int, default=1, help="Expert output dimension")
-    parser.add_argument("--num_layers", type=int, default=2, help="Number of layers")
-    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate")
     parser.add_argument("--use_news", action="store_true", help="是否使用新闻数据")
+    parser.add_argument("--padding_method", type=str, default="zero", choices=["zero", "learn"], help="Padding method for news")
     # MIGA损失函数参数
     parser.add_argument("--omega", type=float, default=2e-2, help="Router loss weight")
     parser.add_argument("--epsilon", type=float, default=1.0, help="Expert loss weight")
@@ -73,32 +79,51 @@ if __name__ == "__main__":
 
     root_dir = os.path.expanduser('~')
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
-    # provider_uri = "~/.qlib/qlib_data/cn_data"  # target_dir
-    # qlib.init(provider_uri=provider_uri, region=REG_CN)
     market = None # 默认用全部
     benchmark = "SH000905"
     # 读取新闻数据
-    a = time.time()
-    news_lmdb_path = '/home/huxiangyu/.qlib/llm_data/embedding.lmdb'
-    if not os.path.exists(news_lmdb_path):
-        news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
-        write_lmdb(news_embed, news_lmdb_path)
-    else:
+    if args.use_news:
+        a = time.time()
+        news_lmdb_path = '/home/huxiangyu/.qlib/llm_data/embedding.lmdb'
+        if not os.path.exists(news_lmdb_path):
+            news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
+            write_lmdb(news_embed, news_lmdb_path)
         news_store = NewsStore(news_lmdb_path)
-    print(f'新闻数据占用内存大小: {news_store.memory_usage} MB')
+        print(f'新闻数据占用内存大小: {news_store.memory_usage} MB')
     # 读取量价数据
-    alpha_64 = read_alpha64()
-    labels = read_label(day=10, method = 'win+neu+zscore')
-    # 选出大于2018年的数据
-    alpha_64 = alpha_64.loc[alpha_64.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
-    labels = labels.loc[labels.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
-    data = alpha_64.join(labels, how='left')
-    data.columns = pd.MultiIndex.from_tuples([('feature', col) for col in alpha_64.columns] + [('label', col) for col in labels.columns])
-    print("读取所有数据用时: ", time.time() - a)
-    print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
+    if args.ohlc:
+        print("读取高开低收数据")
+        assert args.d_feat == 6
+        a = time.time()
+        ohlc = read_ohlc()
+        labels = read_label(day=10, method = 'win+neu+zscore')
+        data = ohlc.join(labels, how='left')
+        
+        data.columns = pd.MultiIndex.from_tuples(
+            [('feature', col) for col in ohlc.columns] 
+            + [('label', col) for col in labels.columns]
+            )
+        print("读取所有数据用时: ", time.time() - a)
+        print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
+
+
+    elif args.alpha64:
+        a = time.time()
+        alpha_64 = read_alpha64()
+        labels = read_label(day=10, method = 'win+neu+zscore')
+        # 选出大于2018年的数据
+        alpha_64 = alpha_64.loc[alpha_64.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
+        labels = labels.loc[labels.index.get_level_values(0) >= pd.Timestamp("2018-01-01")]
+        data = alpha_64.join(labels, how='left')
+        data.columns = pd.MultiIndex.from_tuples([('feature', col) for col in alpha_64.columns] + [('label', col) for col in labels.columns])
+        print("读取所有数据用时: ", time.time() - a)
+        print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
+
+
+
     # 创建 DataLoader
     sdl_pkl = StaticDataLoader(config=data)
-    
+
     task_config = {
         'train': args.train_length,
         'valid': args.valid_length,
@@ -130,26 +155,36 @@ if __name__ == "__main__":
         print(f"\033[31m测试日期: {test_start_time} - {test_end_time}\033[0m")
         
         print(f"时间范围: 训练({start_time} - {fit_end_time}), 验证({val_start_time} - {val_end_time}), 测试({test_start_time} - {test_end_time})")
-        infer_processors = [
-            {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
-            # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
-            {"class": "RobustZScoreNorm", 
-             "kwargs": {
+
+        if args.ohlc:
+            infer_processors = [
+                {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
+            ]
+            
+            # 不用处理
+            learn_processors = [
+                {"class": "DropnaLabel"},
+            ]    
+        elif args.alpha64:
+            infer_processors = [
+                {"class": "ProcessInfHXY", "kwargs": {}}, # 替换为 nan
+                # {"class": "CSRankNorm", "kwargs": {"fields_group": "feature", 'parallel':True, 'n_jobs': 60}},
+                {"class": "RobustZScoreNorm", 
+                 "kwargs": {
                         "fields_group": "feature",
                         "fit_start_time": start_time,
                         "fit_end_time": fit_end_time
                         }},
-            {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
-        ]
-        # ic label 不用处理
-        learn_processors = [
-            {"class": "DropnaLabel"},
-        ]
+                {"class": "Fillna", 'kwargs': {'fields_group': 'feature'}},
+            ]
+            # ic label 不用处理
+            learn_processors = [
+                {"class": "DropnaLabel"},
+            ]        
+            
         data_handler_config = {
             "start_time": start_time,
             "end_time": test_end_time,
-            # "fit_start_time": start_time,
-            # "fit_end_time": fit_end_time,
             "instruments": market,
             "data_loader": sdl_pkl,
             "infer_processors":infer_processors,
@@ -157,25 +192,25 @@ if __name__ == "__main__":
             "process_type": "append",
             "drop_raw": True,
         }   
-            
+        
         task = {
             "model": {
                 "class": "MIGA",
                 "module_path": "qlib.contrib.model.pytorch_miga_ts_news",
                 "kwargs": {
-                    "d_feat": 64, # 模型参数
-                    "hidden_size": 64,
-                    "num_groups": 4,
-                    "num_experts_per_group": 4,
-                    "num_heads": 1,
-                    "top_k": 4,
+                    "d_feat": args.d_feat, # 模型参数
+                    "hidden_size": args.hidden_dim,
+                    "num_groups": args.num_groups,
+                    "num_experts_per_group": args.num_experts_per_group,
+                    "num_heads": args.num_heads,
+                    "top_k": args.top_k,
                     "expert_output_dim": 1,
-                    "num_layers": 2,
-                    "dropout": 0.0,
-                    "n_epochs": 20, # 训练参数
-                    "batch_size": 5000,
+                    "num_layers": args.num_layers,
+                    "dropout": args.dropout,
+                    "n_epochs": args.n_epochs, # 训练参数
+                    "batch_size": args.batch_size,
                     "lr": args.lr,
-                    "early_stop": 10,
+                    "early_stop": args.early_stop,
                     "metric": "ic",
                     "loss": "miga",
                     "n_jobs": 24,
@@ -189,7 +224,9 @@ if __name__ == "__main__":
                     "save_path": save_path,
                     "step_len": args.step_len,
                     "news_store": news_store,
-                    "use_news" : args.use_news
+                    "use_news" : args.use_news,
+                    "padding_method": args.padding_method,
+                    "version": "B" + str(args.version),
                 },
             },
             "dataset": {

@@ -37,8 +37,15 @@ from ..loss.miga import MIGALoss
 from qlib.utils.hxy_utils import (compute_grad_norm, 
                                   compute_layerwise_grad_norm,
                                   IndexedSeqDataset,
-                                  make_collate_fn,)
-
+                                  make_collate_fn,
+                                  process_ohlc,
+                                  process_ohlc_batchwinsor,
+                                  process_ohlc_batchnorm,
+                                  process_ohlc_inf_nan_fill0,
+                                  )
+from qlib.contrib.hxy_model.pytorch_miga_ts import (
+    MIGAB1,
+)
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
 import os
@@ -122,17 +129,21 @@ class MIGA(Model):
         step_len=1,
         news_store=None,
         use_news=True,
+        version=None,
+        padding_method="zero",
+        ohlc=False,
         **kwargs,
     ):
         # Set logger.
+        assert version is not None, "version must be specified"
         self.logger = get_module_logger("MIGA News")
         self.logger.setLevel(logging.DEBUG)
-        self.logger.info("MIGA News pytorch version...")
         if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
             handler = logging.StreamHandler(sys.stdout)
             handler.setLevel(logging.DEBUG)
             self.logger.addHandler(handler)
-        self.logger.info("MIGA News pytorch version...")        
+        self.logger.info(f"MIGA News pytorch version {version}...")
+     
         # set hyper-parameters.
         self.d_feat = d_feat
         self.hidden_size = hidden_size
@@ -160,7 +171,8 @@ class MIGA(Model):
         self.step_len = step_len
         self.news_store = news_store
         self.use_news = use_news
-        
+        self.padding_method = padding_method
+        self.ohlc = ohlc
         if  self.loss == "miga":
             self.omega = omega
             self.epsilon = epsilon
@@ -181,6 +193,8 @@ class MIGA(Model):
                     return self.omega if epoch < self.omega_step_epoch else self.omega_after
             else:
                 omega_scheduler = None
+        elif self.loss == "ic":
+            self.logger.info("Use IC loss")
         else:
             raise ValueError("unknown loss `%s`" % self.loss)    
             
@@ -211,6 +225,7 @@ class MIGA(Model):
             "\nuse_GPU : {}"
             "\nseed : {}"
             "\ndebug : {}"
+            "\n\033[31mpadding_method : {}\033[0m"
             "\nsave_path : {}".format(
                 d_feat,
                 hidden_size,
@@ -237,7 +252,8 @@ class MIGA(Model):
                 self.use_gpu,
                 self.seed,
                 self.debug,
-                self.save_path
+                self.save_path,
+                self.padding_method,
             )
         )
     
@@ -245,60 +261,80 @@ class MIGA(Model):
             np.random.seed(self.seed)
             torch.manual_seed(self.seed)
         
-        # 路由器设置
-        if self.use_news:
-            self.logger.info(f"{Fore.RED}使用新闻数据{Style.RESET_ALL}")
-            router = PriceNewsRouter(
-                price_dim=self.d_feat,
-                news_dim=1024,
-                d_model=self.hidden_size,
-                n_heads=self.num_heads, # 这里的 num_heads 共用了
-            d_gru=self.hidden_size,
-            dropout=self.dropout
-            )
-
-            # 定义 MIGA 新闻模型
-            self.MIGA_model = MIGANewsModel(
-                input_dim=self.d_feat,
-                d_gru=self.hidden_size,
-                news_dim=1024,
-                num_groups=self.num_groups,
-                num_experts_per_group=self.num_experts_per_group,
-                num_heads=self.num_heads,
-                top_k=self.top_k,
-                expert_output_dim=self.expert_output_dim,
-                router=router,
-            )
-        else:
-            self.logger.info(f"{Fore.BLUE}不使用新闻数据{Style.RESET_ALL}")
-            router = Router(
-                input_dim=self.d_feat,
-                hidden_dim=self.hidden_size,
-                num_groups=self.num_groups,
-                num_experts_per_group=self.num_experts_per_group,
-            )
-            self.MIGA_model = MIGAModel(
-                input_dim=self.d_feat,
-                num_groups=self.num_groups,
-                num_experts_per_group=self.num_experts_per_group,
-                num_heads=self.num_heads,
-                top_k=self.top_k,
-                expert_output_dim=self.expert_output_dim,
-                router=router,
-            )
-        self.logger.info("model:\n{:}".format(self.MIGA_model))
-        self.logger.info("model size: {:.4f} MB".format(count_parameters(self.MIGA_model)))
-
+        self.ablation_study(version)
         if optimizer.lower() == "adam":
             self.train_optimizer = optim.Adam(self.MIGA_model.parameters(), lr=self.lr)
         elif optimizer.lower() == "gd":
             self.train_optimizer = optim.SGD(self.MIGA_model.parameters(), lr=self.lr)
         else:
-            raise NotImplementedError("optimizer {} is not supported!".format(optimizer))
+            raise NotImplementedError("optimizer {} is not supported!".format(optimizer))        
 
+
+        
         self.fitted = False
         self.MIGA_model.to(self.device)
+        self.logger.info("model:\n{:}".format(self.MIGA_model))
+        self.logger.info("model size: {:.4f} MB".format(count_parameters(self.MIGA_model)))
+        
+        # 路由器设置
+        # if self.use_news:
+        #     self.logger.info(f"{Fore.RED}使用新闻数据{Style.RESET_ALL}")
+        #     router = PriceNewsRouter(
+        #         price_dim=self.d_feat,
+        #         news_dim=1024,
+        #         d_model=self.hidden_size,
+        #         n_heads=self.num_heads, # 这里的 num_heads 共用了
+        #     d_gru=self.hidden_size,
+        #     dropout=self.dropout
+        #     )
+
+        #     # 定义 MIGA 新闻模型
+        #     self.MIGA_model = MIGANewsModel(
+        #         input_dim=self.d_feat,
+        #         d_gru=self.hidden_size,
+        #         news_dim=1024,
+        #         num_groups=self.num_groups,
+        #         num_experts_per_group=self.num_experts_per_group,
+        #         num_heads=self.num_heads,
+        #         top_k=self.top_k,
+        #         expert_output_dim=self.expert_output_dim,
+        #         router=router,
+        #     )
+        # else:
+        #     self.logger.info(f"{Fore.BLUE}不使用新闻数据{Style.RESET_ALL}")
+        #     router = Router(
+        #         input_dim=self.d_feat,
+        #         hidden_dim=self.hidden_size,
+        #         num_groups=self.num_groups,
+        #         num_experts_per_group=self.num_experts_per_group,
+        #     )
+        #     self.MIGA_model = MIGAModel(
+        #         input_dim=self.d_feat,
+        #         num_groups=self.num_groups,
+        #         num_experts_per_group=self.num_experts_per_group,
+        #         num_heads=self.num_heads,
+        #         top_k=self.top_k,
+        #         expert_output_dim=self.expert_output_dim,
+        #         router=router,
+        #     )
+
+
     
+    def ablation_study(self, version = "B1"):
+        # 消融实验
+        assert version in ("B1", "B2", "B3", "B4", "B5"), "version must be in (B1, B2, B3, B4, B5)"
+        if version == "B1":
+            self.MIGA_model = MIGAB1(
+                price_dim=self.d_feat,
+                news_dim=1024,
+                hidden_dim=self.hidden_size,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+                frozen=False,
+                model_path=None,
+                padding_method=self.padding_method,
+            )
+        
 
     @property
     def use_gpu(self):
@@ -310,8 +346,14 @@ class MIGA(Model):
 
     def loss_fn(self, pred, label, hidden,weight=None):
         mask = ~torch.isnan(label)
-        return self.Miga_loss(pred[mask], label[mask], hidden)
-
+        if self.loss == "miga": 
+            return self.Miga_loss(pred[mask], label[mask], hidden)
+        elif self.loss == 'ic':
+            return ic_loss(pred[mask], label[mask])
+        else:
+            raise ValueError("unknown loss `%s`" % self.loss)
+        
+        
     def metric_fn(self, pred, label, name, topk=None):
         mask = torch.isfinite(label)
 
@@ -358,14 +400,21 @@ class MIGA(Model):
             news.squeeze_(0)
             news_mask.squeeze_(0)
             # 取出量价、新闻、mask
-            price_feature = data[:,:, :self.d_feat].to(self.device)
+            feature = data[:,:, :self.d_feat].to(self.device)
             label = data[:, -1, self.d_feat].to(self.device)
             news_feature = news.to(self.device)
             news_mask = news_mask.to(self.device)
+            if self.ohlc:
+                # 使用 ohlc 数据
+                # 先时序归一化+ winsor + batchnorm + fill0
+                feature = process_ohlc(feature)
+                feature = process_ohlc_batchwinsor(feature)
+                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_inf_nan_fill0(feature)
             if self.use_news:
-                output = self.MIGA_model(price_feature, news_feature, news_mask)
+                output = self.MIGA_model(feature, news_feature, news_mask)
             else:
-                output = self.MIGA_model(price_feature)
+                output = self.MIGA_model(feature)
             pred = output['predictions']
             hidden_representations = output['hidden_representations']
             
