@@ -138,7 +138,7 @@ class GRUNDCG(Model):
             handler.setLevel(logging.DEBUG)
             self.logger.addHandler(handler)
         self.logger.info("GRU pytorch version...")
-
+        self.logger.addHandler(logging.FileHandler(f"{save_path}/train.log"))
         # set hyper-parameters.
         self.d_feat = d_feat
         self.hidden_size = hidden_size

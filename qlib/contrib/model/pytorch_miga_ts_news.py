@@ -167,6 +167,7 @@ class MIGA(Model):
             handler = logging.StreamHandler(sys.stdout)
             handler.setLevel(logging.DEBUG)
             self.logger.addHandler(handler)
+        self.logger.addHandler(logging.FileHandler(f"{save_path}/train.log"))
         self.logger.info(f"MIGA News pytorch version {version}...")
      
         # set hyper-parameters.

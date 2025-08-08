@@ -49,6 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
     parser.add_argument("--n_jobs", type=int, default=0, help="Number of jobs for parallel processing")
     parser.add_argument("--gpu", type=int, default=0, help="GPU id")
+    parser.add_argument("--debug", action="store_true", help="Debug mode")
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
@@ -253,7 +254,7 @@ if __name__ == "__main__":
                     "epsilon": args.epsilon,
                     "omega_scheduler": args.omega_scheduler,
                     "omega_decay": args.omega_decay,
-                    "debug": True,  # Set to True for debugging mode
+                    "debug": args.debug,  # Set to True for debugging mode
                     "save_path": f"{save_path}/task_{task_id}",
                     "step_len": args.step_len,
                     "news_store": news_lmdb_path,

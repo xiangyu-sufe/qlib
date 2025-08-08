@@ -56,6 +56,7 @@ if __name__ == "__main__":
     # 控制流参数
     parser.add_argument("--debug", action="store_true", default=False, help="Debug mode")
     parser.add_argument("--save_path", type=str, default=".")
+    parser.add_argument("--n_jobs", type=int, default=0, help="Number of jobs for parallel processing")
     # 数据参数
     parser.add_argument("--onlyrun_task_id", type=int, nargs='+', default=None, help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
@@ -210,7 +211,7 @@ if __name__ == "__main__":
                     "early_stop": 10,
                     "metric": args.metric,
                     "loss": args.loss,
-                    "n_jobs": 24,
+                    "n_jobs": args.n_jobs,
                     "GPU": args.gpu,
                     "seed": args.onlyrun_seed_id,
                     "sigma": args.sigma,
