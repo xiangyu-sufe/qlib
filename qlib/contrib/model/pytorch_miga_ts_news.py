@@ -702,6 +702,11 @@ class MIGA(Model):
             val_score = valid_result['val_'+self.metric]
             # 更新学习率
             self.lr_scheduler.step(val_score)
+            self.logger.info(
+                f"{Fore.BLUE}"
+                f"Learning Rate: {self.train_optimizer.param_groups[0]['lr']}"
+                f"{Style.RESET_ALL}"
+            )
             if val_score > best_score:
                 best_score = val_score
                 stop_steps = 0

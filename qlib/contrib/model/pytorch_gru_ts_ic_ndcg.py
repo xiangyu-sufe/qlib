@@ -336,6 +336,7 @@ class GRUNDCG(Model):
                     lambda_grads = lambda_grads / lambda_grads.sum()
                 loss = self.loss_fn(pred, label)
                 grad = torch.autograd.grad(loss, pred, create_graph=True)[0]
+                grad_norm = grad.norm(2)
                 if self.combine_type == 'mult': # 相乘形式
                     lambda_grads = apply_mask_preserve_norm(grad, lambda_grads, method = 'l2')
                     # lambda_grads = lambda_grads * grad * 100
@@ -354,6 +355,7 @@ class GRUNDCG(Model):
                     lambda_grads = scale_preserve_sign_torch(lambda_grads)
                     grad = scale_preserve_sign_torch(grad)
                     lambda_grads = (1-self.weight) * lambda_grads + grad * self.weight
+                    lambda_grads = lambda_grads / lambda_grads.norm(2) * grad_norm # 保证梯度范数一致
                 else:
                     raise ValueError(f"Unknown combine_type: {self.combine_type}")
             else:
