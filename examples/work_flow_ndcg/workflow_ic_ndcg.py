@@ -26,6 +26,28 @@ import torch
 import pandas as pd
 import os
 import time
+import random
+import numpy as np
+
+def set_global_seed(seed):
+    """设置全局随机种子，确保结果可复现"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    
+    # 设置CUDA确定性选项
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    # 设置环境变量确保CUDA操作确定性
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+    
+    # 使用确定性算法
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
 if __name__ == "__main__":
     
     import argparse
@@ -66,11 +88,17 @@ if __name__ == "__main__":
     parser.add_argument("--n_layer", type=int, default=10, )
     
     args = parser.parse_args()
+    
+    # 设置全局随机种子，确保结果可复现
+    set_global_seed(args.onlyrun_seed_id)
+    
     args.start_time = is_month_end_trade_day(args.start_time)[0]
     args.end_time = is_month_end_trade_day(args.end_time)[0]
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
+    save_fig_path = os.path.join(save_path, 'figs')
     os.makedirs(save_path, exist_ok=True)
+    os.makedirs(save_fig_path, exist_ok=True)
 
     root_dir = os.path.expanduser('~')
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
@@ -148,7 +176,7 @@ if __name__ == "__main__":
                                         start_time = args.start_time,
                                         end_time = args.end_time)
 
-
+    pred_label_list = []
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
         print(f"开始处理任务 {task_id}")
@@ -196,6 +224,7 @@ if __name__ == "__main__":
                     "save_path": f"{save_path}/task_{task_id}",
                     "step_len": args.step_len,
                     "ohlc": args.ohlc,
+                    "id": task_id,
                 },
             },
         }
@@ -297,34 +326,23 @@ if __name__ == "__main__":
             label.columns = ["label"]
             
             pred_label = pd.concat([label, score], axis=1, sort=True).reindex(score.index)
+            pred_label_list.append(pred_label)
             
-            # 确保保存目录存在
-            import os
-            os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
             
             # 保存图片 - 使用多种方法
+            fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
             try:
-                fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
-                # 方法1: 尝试保存为PNG
-                try:
-                    fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
-                    print("✅ 成功保存 score_ic_graph.png")
-                except Exception as png_error:
-                    print(f"⚠️ PNG保存失败: {png_error}")
-                    # 方法2: 保存为HTML文件
-                    try:
-                        fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
-                        print("✅ 成功保存 score_ic_graph.html (可在浏览器中查看)")
-                    except Exception as html_error:
-                        print(f"⚠️ HTML保存失败: {html_error}")
-                        # 方法3: 保存为JSON文件
-                        try:
-                            fig.write_json(f"{save_path}/task_{task_id}/score_ic_graph.json")
-                            print("✅ 成功保存 score_ic_graph.json (plotly格式)")
-                        except Exception as json_error:
-                            print(f"❌ 所有保存方法都失败: {json_error}")
+                fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
             except Exception as e:
                 print(f"❌ 生成 score_ic_graph 时出错: {e}")
             
-            
             print(f"任务 {task_id} 完成")
+    print("汇总结果: ")
+    pred_label_all = pd.concat(pred_label_list, axis=0).sort_index()
+    fig, _ = analysis_position.score_ic_graph(pred_label_all, show_notebook=False)
+    try:
+        fig.write_html(f"{save_path}/score_ic_graph_all.html")
+    except Exception as e:
+        print(f"❌ 生成 score_ic_graph 时出错: {e}")
+
+    

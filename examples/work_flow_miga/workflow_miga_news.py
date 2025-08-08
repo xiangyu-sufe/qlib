@@ -7,6 +7,10 @@ Qlib provides two kinds of interfaces.
 
 The interface of (1) is `qrun XXX.yaml`.  The interface of (2) is script like this, which nearly does the same thing as `qrun XXX.yaml`
 """
+# Set deterministic cuBLAS workspace BEFORE importing torch/CUDA to avoid nondeterministic kernels
+import os as _os
+_os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+import json
 import qlib
 from qlib.constant import REG_CN
 from qlib.contrib.report import analysis_model, analysis_position
@@ -14,7 +18,7 @@ from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.utils.hxy_utils import (
     get_label, prepare_task_pool, read_alpha64, read_minute, read_label,
     NewsStore, make_collate_fn, write_lmdb, IndexedSeqDataset, read_ohlc,
-    is_month_end_trade_day
+    is_month_end_trade_day, custom_serializer
 )
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
@@ -91,9 +95,11 @@ if __name__ == "__main__":
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
         # deterministic behavior for cuDNN / cuBLAS
+        os.environ['PYTHONHASHSEED'] = str(seed)
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
@@ -248,7 +254,7 @@ if __name__ == "__main__":
                     "omega_scheduler": args.omega_scheduler,
                     "omega_decay": args.omega_decay,
                     "debug": True,  # Set to True for debugging mode
-                    "save_path": save_path,
+                    "save_path": f"{save_path}/task_{task_id}",
                     "step_len": args.step_len,
                     "news_store": news_lmdb_path,
                     "use_news" : args.use_news,
@@ -276,7 +282,10 @@ if __name__ == "__main__":
                 },
             },
         }
-        
+        # 保存设置
+        os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
+        with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
+            json.dump(task, f, indent=2, ensure_ascii=False, default=custom_serializer)        
 
         # model initialization
         model = init_instance_by_config(task["model"])
@@ -292,32 +301,43 @@ if __name__ == "__main__":
         model.extra_worker_init_fn = _seed_worker
         model.debug_timing = True
         model.fit(dataset)
-        # 在训练集预测
-        # score_train = model.predict_train(dataset)
-        # score_train.name = 'score'
-        # score_train = score_train.to_frame()
-        # label_train = get_label(dataset, segment="train")
-        # label_train.columns = ["label"]
-        
-        # pred_label_train = pd.concat([label_train, score_train], axis=1, sort=True).reindex(label_train.index)
-        # fig, = analysis_position.score_ic_graph(pred_label_train, show_notebook=False)
-        # # 保存图
-        # # fig.savefig(f"{save_path}/score_ic_graph.png")
-        # fig, = analysis_position.top_score_ic_graph(pred_label_train, show_notebook=False)
-        # fig.savefig(f"{save_path}/top_score_ic_graph.png")
         
         # 在测试集预测
         score = model.predict(dataset)
         score.name = 'score'
+        # 保存预测值
+        score.to_csv(f"{save_path}/task_{task_id}/test.csv")
         score = score.to_frame()
         print(score.head())
         # 测试集的图
         label = get_label(dataset, segment="test")
         label.columns = ["label"]
+        # 拼接 label 和 score
+        pred_label = pd.concat([label, score], axis=1, sort=True).reindex(score.index)
         
-        pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
-        fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
-        # 保存图
-        # fig.savefig(f"{save_path}/score_ic_graph.png")
-        # fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
-        # fig.savefig(f"{save_path}/top_score_ic_graph.png")
+        # 保存图片 - 使用多种方法
+        try:
+            fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+            # 方法1: 尝试保存为PNG
+            try:
+                fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
+                print("✅ 成功保存 score_ic_graph.png")
+            except Exception as png_error:
+                print(f"⚠️ PNG保存失败: {png_error}")
+                # 方法2: 保存为HTML文件
+                try:
+                    fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
+                    print("✅ 成功保存 score_ic_graph.html (可在浏览器中查看)")
+                except Exception as html_error:
+                    print(f"⚠️ HTML保存失败: {html_error}")
+                    # 方法3: 保存为JSON文件
+                    try:
+                        fig.write_json(f"{save_path}/task_{task_id}/score_ic_graph.json")
+                        print("✅ 成功保存 score_ic_graph.json (plotly格式)")
+                    except Exception as json_error:
+                        print(f"❌ 所有保存方法都失败: {json_error}")
+        except Exception as e:
+            print(f"❌ 生成 score_ic_graph 时出错: {e}")
+        
+        
+        print(f"任务 {task_id} 完成")

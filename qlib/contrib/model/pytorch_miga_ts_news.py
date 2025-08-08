@@ -52,12 +52,8 @@ from qlib.contrib.hxy_model.pytorch_miga_ts import (
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
 import os
+import random
 
-
-# class DailyBatchSampler(Sampler):
-#     def __init__(self, data_source):
-#         self.data_source = data_source
-#         # calculate number of samples in each batch
 #         self.daily_count = (
 #             pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
 #         )
@@ -106,6 +102,15 @@ class DailyBatchSampler(BatchSampler):
     def __len__(self):
         return len(self.order)
     
+
+def seed_worker(worker_id: int):
+    """Set deterministic seeds for each DataLoader worker.
+    Uses torch.initial_seed() to derive a distinct seed per worker, and applies it to
+    Python's random and NumPy RNGs as recommended by PyTorch docs.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 class MIGA(Model):
     """
@@ -290,6 +295,11 @@ class MIGA(Model):
         if self.seed is not None:
             np.random.seed(self.seed)
             torch.manual_seed(self.seed)
+            torch.cuda.manual_seed(self.seed)
+            torch.cuda.manual_seed_all(self.seed)
+            # 确保CUDA操作的确定性
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
         
         self.ablation_study(version)
         if optimizer.lower() == "adam":
@@ -615,6 +625,11 @@ class MIGA(Model):
         else:
             raise ValueError("Unsupported reweighter type.")
 
+        # Ensure deterministic DataLoader worker seeding via generator and worker_init_fn
+        _base_seed = int(self.seed) if self.seed is not None else 0
+        _generator = torch.Generator()
+        _generator.manual_seed(_base_seed)
+
         train_loader = DataLoader(
             dl_train,
             batch_sampler=sampler_train,
@@ -623,6 +638,8 @@ class MIGA(Model):
             pin_memory=True,
             prefetch_factor=2,
             persistent_workers=True,
+            worker_init_fn=seed_worker,
+            generator=_generator,
         )
         valid_loader = DataLoader(
             dl_valid,
@@ -632,6 +649,8 @@ class MIGA(Model):
             pin_memory=True,
             prefetch_factor=2,
             persistent_workers=True,
+            worker_init_fn=seed_worker,
+            generator=_generator,
         )
         # next(iter(train_loader)) # 预加载
         # next(iter(valid_loader)) # 预加载
@@ -724,7 +743,9 @@ class MIGA(Model):
         test_loader = DataLoader(dl_test,
                                  batch_sampler=sampler_test,
                                  num_workers=self.n_jobs,
-                                 collate_fn=make_collate_fn())
+                                 collate_fn=make_collate_fn(),
+                                 worker_init_fn=seed_worker,
+                                 generator=torch.Generator().manual_seed(int(self.seed) if self.seed is not None else 0))
         self.test_index = sampler_test.reordered_index
         self.MIGA_model.eval()
         preds = []

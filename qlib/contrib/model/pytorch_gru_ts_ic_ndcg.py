@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.data import Sampler
+from torch.utils.data import BatchSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from .pytorch_utils import count_parameters
@@ -50,20 +50,33 @@ import sys
 
 init(autoreset=True)
 
-class DailyBatchSampler(Sampler):
+class DailyBatchSampler(BatchSampler):
     """
-        HXY 修正
+    Yield all rows of the same trading day as one batch,
+    independent of the index sort order.
     """
     def __init__(self, data_source):
         self.data_source = data_source
         # 把 datetime -> 行号数组 建立映射
-        dts = self.data_source.get_index().get_level_values("datetime")
+        original_index = self.data_source.get_index()
+        dts = original_index.get_level_values("datetime")
         self.groups = defaultdict(list)
         for pos, dt in enumerate(dts):
             self.groups[dt].append(pos)
         # 交易日按时间排序，保证训练顺序一致
         self.order = sorted(self.groups.keys())
 
+        # 按训练顺序把行号拼成一个完整的新索引顺序
+        new_pos_list = []
+        for dt in self.order:
+            new_pos_list.extend(self.groups[dt])
+        # 根据行号列表重新排序原 MultiIndex
+        self.new_index = original_index[new_pos_list]
+
+    @property
+    def reordered_index(self):
+        return self.new_index
+        
     def __iter__(self):
         for dt in self.order:
             yield np.array(self.groups[dt])
@@ -113,6 +126,7 @@ class GRUNDCG(Model):
         combine_type='mult',
         ohlc=False,
         display_list=['loss', 'ic', 'rankic', 'ndcg', 'topk_return'],
+        id=0,
         **kwargs,
     ):
         # Set logger.
@@ -547,9 +561,10 @@ class GRUNDCG(Model):
 
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
-        self.test_index = dl_test.get_index()
+        sampler_test = DailyBatchSampler(dl_test)
+        self.test_index = sampler_test.reordered_index
         # 这里不能用dailysampler，否则 index 对不上
-        test_loader = DataLoader(dl_test, batch_size=self.batch_size, num_workers=self.n_jobs)
+        test_loader = DataLoader(dl_test, batch_sampler=sampler_test, num_workers=self.n_jobs)
         self.GRU_model.eval()
         preds = []
 
