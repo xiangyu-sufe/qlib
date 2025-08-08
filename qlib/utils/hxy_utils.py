@@ -710,9 +710,9 @@ def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
     assert D >= 6, "输入特征维度应≥6"
     reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
     
-    medians = torch.nanmedian(reshaped, dim=0).values  # (6,)
+    medians = torch.nanmedian(reshaped.cpu(), dim=0).values.to(reshaped.device)  # (6,)
     abs_dev = torch.abs(reshaped - medians)
-    mads = torch.nanmedian(abs_dev, dim=0).values  # (6,)
+    mads = torch.nanmedian(abs_dev.cpu(), dim=0).values.to(reshaped.device)  # (6,)
 
     lower = medians - N * mads
     upper = medians + N * mads

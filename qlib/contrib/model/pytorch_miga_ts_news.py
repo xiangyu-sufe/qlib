@@ -80,13 +80,25 @@ class DailyBatchSampler(BatchSampler):
     def __init__(self, data_source):
         self.data_source = data_source
         # 把 datetime -> 行号数组 建立映射
-        dts = self.data_source.get_index().get_level_values("datetime")
+        original_index = self.data_source.get_index()
+        dts = original_index.get_level_values("datetime")
         self.groups = defaultdict(list)
         for pos, dt in enumerate(dts):
             self.groups[dt].append(pos)
         # 交易日按时间排序，保证训练顺序一致
         self.order = sorted(self.groups.keys())
 
+        # 按训练顺序把行号拼成一个完整的新索引顺序
+        new_pos_list = []
+        for dt in self.order:
+            new_pos_list.extend(self.groups[dt])
+        # 根据行号列表重新排序原 MultiIndex
+        self.new_index = original_index[new_pos_list]
+
+    @property
+    def reordered_index(self):
+        return self.new_index
+        
     def __iter__(self):
         for dt in self.order:
             yield np.array(self.groups[dt])
@@ -409,8 +421,10 @@ class MIGA(Model):
 
     def train_epoch(self, data_loader):
         import time
-        torch.cuda.synchronize()        # 开始前清空队列
-        start = time.time()
+        
+        
+        # torch.cuda.synchronize()        # 开始前清空队列
+        # start = time.time()
         
         self.MIGA_model.train()
         # Debug模式下记录每个batch的梯度信息
@@ -426,6 +440,8 @@ class MIGA(Model):
         for i, (data, news, news_mask) in enumerate(pbar):
             if i < self.step_len:
                 continue
+            # ------------- IO 计时开始 ------------
+            
             # 去除横截面 dim
             data.squeeze_(0) 
             news.squeeze_(0)
@@ -435,6 +451,12 @@ class MIGA(Model):
             label = data[:, -1, self.d_feat].to(self.device, non_blocking=True)
             news_feature = news.to(self.device, non_blocking=True)
             news_mask = news_mask.to(self.device, non_blocking=True)
+            # torch.cuda.synchronize()            # 保证搬运结束
+            
+            # ------------- IO 计时结束 ------------
+            
+            # ---------- ② GPU 计时开始 ----------
+            ts_io = time.time()
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
@@ -442,10 +464,13 @@ class MIGA(Model):
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
                 feature = process_ohlc_inf_nan_fill0_cuda(feature)
+            io_time = time.time() - ts_io    
+            t1 = time.time()
             if self.use_news:
                 output = self.MIGA_model(feature, news_feature, news_mask)
             else:
                 output = self.MIGA_model(feature)
+            
             pred = output['predictions']
             hidden_representations = output['hidden_representations']
             if self.loss == "miga":
@@ -462,6 +487,13 @@ class MIGA(Model):
             torch.nn.utils.clip_grad_value_(self.MIGA_model.parameters(), 3.0)
             self.train_optimizer.step()
             
+            # torch.cuda.synchronize()            # GPU 全部算完
+            # gpu_time = time.time() - t1         # ---------- ② GPU 计时结束 ----------
+
+            # if getattr(self, "debug_timing", False):
+            #     total = io_time + gpu_time
+            #     print(f"step {i:04d} | IO {io_time*1e3:.1f} ms "
+            #           f"| GPU {gpu_time*1e3:.1f} ms | IO% {io_time/total*100:.1f}")
             
             if self.debug:
                 # 计算梯度范数
@@ -500,8 +532,8 @@ class MIGA(Model):
         for name in self.display_list:
             result_agg['train_'+name] = float(np.mean(result['train_'+name]))
 
-        torch.cuda.synchronize()        # 确保 GPU 全部算完
-        print(f"epoch {i} wall-time: {time.time()-start:.2f}s")
+        # torch.cuda.synchronize()        # 确保 GPU 全部算完
+        # print(f"epoch {i} wall-time: {time.time()-start:.2f}s")
         return result_agg
     
 
@@ -619,7 +651,11 @@ class MIGA(Model):
         for step in tqdm(range(self.n_epochs)):
             self.logger.info("Epoch%d:", step)
             self.logger.info("training...")
+            if step == 0:
+                self.MIGA_model.reset_count()
             train_result = self.train_epoch(train_loader)
+            if step == 0:
+                self.logger.info("Train News Coverage Ratio: %.6lf", self.MIGA_model.news_coverage_ratio)
             self.logger.info("evaluating...")
             valid_result = self.test_epoch(valid_loader)
             
@@ -660,7 +696,7 @@ class MIGA(Model):
         self.logger.info("best score: %.6lf @ %d" % (best_score, best_epoch))
         if best_param is not None:
             self.MIGA_model.load_state_dict(best_param)
-            torch.save(best_param, save_path)
+            torch.save(best_param, os.path.join(save_path, 'model.pt'))
 
         if self.use_gpu:
             torch.cuda.empty_cache()
@@ -681,21 +717,26 @@ class MIGA(Model):
 
         dl_test = dataset.prepare("test", col_set=["feature", "label"], data_key=DataHandlerLP.DK_I)
         dl_test.config(fillna_type="ffill+bfill")
-        self.test_index = dl_test.get_index()
+        sampler_test = DailyBatchSampler(dl_test)
         dl_test = IndexedSeqDataset(dl_test, news_store_path=self.news_store_path)
 
+
         test_loader = DataLoader(dl_test,
-                                 batch_size=self.batch_size,
+                                 batch_sampler=sampler_test,
                                  num_workers=self.n_jobs,
                                  collate_fn=make_collate_fn())
+        self.test_index = sampler_test.reordered_index
         self.MIGA_model.eval()
         preds = []
 
-        for data, news_mask in test_loader:
-            data.squeeze_(0) # 去除横截面 dim
+        for data, news, news_mask in test_loader:
+            # 去除横截面 dim
+            data.squeeze_(0) 
+            news.squeeze_(0)
             news_mask.squeeze_(0)
-            feature = data[:, :, :self.d_feat].to(self.device, non_blocking=True)
-            news_feature = data[:, :, self.d_feat+1:].to(self.device, non_blocking=True)
+            feature = data[:,:, :self.d_feat].to(self.device, non_blocking=True)
+            # label = data[:, -1, self.d_feat].to(self.device, non_blocking=True)
+            news_feature = news.to(self.device, non_blocking=True)
             news_mask = news_mask.to(self.device, non_blocking=True)
             if self.ohlc:
                 # 使用 ohlc 数据
@@ -709,7 +750,8 @@ class MIGA(Model):
                     output = self.MIGA_model(feature.float(), news_feature.float(), news_mask)
                 else:
                     output = self.MIGA_model(feature.float())
-                pred = output['predictions']
+                pred = output['predictions'].cpu().numpy()
+                
 
             preds.append(pred)
 

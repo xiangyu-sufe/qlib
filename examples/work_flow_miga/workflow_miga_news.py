@@ -14,6 +14,7 @@ from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.utils.hxy_utils import (
     get_label, prepare_task_pool, read_alpha64, read_minute, read_label,
     NewsStore, make_collate_fn, write_lmdb, IndexedSeqDataset, read_ohlc,
+    is_month_end_trade_day
 )
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
@@ -24,6 +25,7 @@ from torch.utils.data import Sampler, DataLoader
 from qlib.data.dataset.loader import StaticDataLoader, QlibDataLoader  
 
 import pandas as pd
+import random, numpy as np, torch
 import numpy as np
 import os
 
@@ -31,6 +33,7 @@ import os
 if __name__ == "__main__":
     # 数据参数
     import argparse
+
     import time
     parser = argparse.ArgumentParser()
     # 实验参数
@@ -48,7 +51,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
     # 时间范围参数
     parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
-    parser.add_argument("--end_time", type=str, default="2024-09-30", help="End time for data")
+    parser.add_argument("--end_time", type=str, default="2025-05-31", help="End time for data")
     # 模型一般参数
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--save_path", type=str, default=".")
@@ -78,6 +81,26 @@ if __name__ == "__main__":
     parser.add_argument("--omega_step_epoch", type=int, default=10, help="Step epoch for omega")
     parser.add_argument("--omega_after", type=float, default=1.0, help="Omega after step epoch")
     args = parser.parse_args()
+    args.start_time = is_month_end_trade_day(args.start_time)[0]
+    args.end_time = is_month_end_trade_day(args.end_time)[0]
+    # ---------------- Deterministic seed ----------------
+    GLOBAL_SEED = getattr(args, "onlyrun_seed_id", 0) or 0
+
+    def _set_global_deterministic_seed(seed: int = 0):
+        """Set seeds for reproducibility across random, numpy, torch (CPU & GPU) and configure deterministic CUDA kernels."""
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # deterministic behavior for cuDNN / cuBLAS
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+    _set_global_deterministic_seed(GLOBAL_SEED)
+    # ----------------------------------------------------
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
     os.makedirs(save_path, exist_ok=True)
@@ -110,8 +133,6 @@ if __name__ == "__main__":
             )
         print("读取所有数据用时: ", time.time() - a)
         print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
-
-
     elif args.alpha64:
         a = time.time()
         alpha_64 = read_alpha64()
@@ -204,6 +225,7 @@ if __name__ == "__main__":
                 "module_path": "qlib.contrib.model.pytorch_miga_ts_news",
                 "kwargs": {
                     "d_feat": args.d_feat, # 模型参数
+                    "seed": GLOBAL_SEED, # 种子
                     "hidden_size": args.hidden_dim,
                     "num_groups": args.num_groups,
                     "num_experts_per_group": args.num_experts_per_group,
@@ -259,6 +281,16 @@ if __name__ == "__main__":
         # model initialization
         model = init_instance_by_config(task["model"])
         dataset = init_instance_by_config(task["dataset"])
+
+        # Ensure DataLoader workers are deterministic
+        def _seed_worker(worker_id: int):
+            worker_seed = GLOBAL_SEED + worker_id
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+            torch.manual_seed(worker_seed)
+        # inject into model so it can be used when constructing DataLoader
+        model.extra_worker_init_fn = _seed_worker
+        model.debug_timing = True
         model.fit(dataset)
         # 在训练集预测
         # score_train = model.predict_train(dataset)
@@ -284,8 +316,8 @@ if __name__ == "__main__":
         label.columns = ["label"]
         
         pred_label = pd.concat([label, score], axis=1, sort=True).reindex(label.index)
-        fig, = analysis_position.score_ic_graph(pred_label, show_notebook=False)
+        fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
         # 保存图
         # fig.savefig(f"{save_path}/score_ic_graph.png")
-        fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
+        # fig, = analysis_position.top_score_ic_graph(pred_label, show_notebook=False)
         # fig.savefig(f"{save_path}/top_score_ic_graph.png")

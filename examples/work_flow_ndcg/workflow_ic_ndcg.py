@@ -18,7 +18,8 @@ from qlib.utils.hxy_utils import (get_label,
                                   read_alpha64, 
                                   read_ohlc,
                                   read_label,
-                                  custom_serializer)
+                                  custom_serializer,
+                                  is_month_end_trade_day)
 from torch.utils.data import TensorDataset, DataLoader
 from qlib.data.dataset.loader import StaticDataLoader
 import torch
@@ -42,13 +43,13 @@ if __name__ == "__main__":
     parser.add_argument("--alpha158", action="store_true",  help="Use alpha158 data")
     parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
     # 数据集长度参数
-    parser.add_argument("--train_length", type=int, default=1200, help="Training dataset length")
+    parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
-    parser.add_argument("--test_length", type=int, default=240, help="Test dataset length")
+    parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
     
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2019-12-31", help="Start time for data")
-    parser.add_argument("--end_time", type=str, default="2024-12-31", help="End time for data")
+    parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
+    parser.add_argument("--end_time", type=str, default="2025-05-31", help="End time for data")
     # 模型参数
     parser.add_argument("--n_epochs", type=int, default=20, help="Number of epochs")
     parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
@@ -65,6 +66,8 @@ if __name__ == "__main__":
     parser.add_argument("--n_layer", type=int, default=10, )
     
     args = parser.parse_args()
+    args.start_time = is_month_end_trade_day(args.start_time)[0]
+    args.end_time = is_month_end_trade_day(args.end_time)[0]
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
     os.makedirs(save_path, exist_ok=True)
