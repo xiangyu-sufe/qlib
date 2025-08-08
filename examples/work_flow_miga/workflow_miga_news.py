@@ -168,7 +168,7 @@ if __name__ == "__main__":
                                         start_time = args.start_time,
                                         end_time = args.end_time)
     
-
+    pred_label_list = []
     # 根据only_run_task_pool进行迭代
     for task_id, segments in only_run_task_pool.items():
         print(f"开始处理任务 {task_id}")
@@ -316,28 +316,16 @@ if __name__ == "__main__":
         pred_label = pd.concat([label, score], axis=1, sort=True).reindex(score.index)
         
         # 保存图片 - 使用多种方法
+        fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
         try:
-            fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
-            # 方法1: 尝试保存为PNG
-            try:
-                fig.write_image(f"{save_path}/task_{task_id}/score_ic_graph.png")
-                print("✅ 成功保存 score_ic_graph.png")
-            except Exception as png_error:
-                print(f"⚠️ PNG保存失败: {png_error}")
-                # 方法2: 保存为HTML文件
-                try:
-                    fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
-                    print("✅ 成功保存 score_ic_graph.html (可在浏览器中查看)")
-                except Exception as html_error:
-                    print(f"⚠️ HTML保存失败: {html_error}")
-                    # 方法3: 保存为JSON文件
-                    try:
-                        fig.write_json(f"{save_path}/task_{task_id}/score_ic_graph.json")
-                        print("✅ 成功保存 score_ic_graph.json (plotly格式)")
-                    except Exception as json_error:
-                        print(f"❌ 所有保存方法都失败: {json_error}")
+            fig.write_html(f"{save_path}/task_{task_id}/score_ic_graph.html")
         except Exception as e:
             print(f"❌ 生成 score_ic_graph 时出错: {e}")
-        
-        
         print(f"任务 {task_id} 完成")
+    print("汇总结果: ")
+    pred_label_all = pd.concat(pred_label_list, axis=0).sort_index()
+    fig, _ = analysis_position.score_ic_graph(pred_label_all, show_notebook=False)
+    try:
+        fig.write_html(f"{save_path}/score_ic_graph_all.html")
+    except Exception as e:
+        print(f"❌ 生成 score_ic_graph 时出错: {e}")

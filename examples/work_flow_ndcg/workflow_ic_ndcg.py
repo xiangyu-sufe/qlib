@@ -96,9 +96,7 @@ if __name__ == "__main__":
     args.end_time = is_month_end_trade_day(args.end_time)[0]
     save_path = args.save_path
     save_path = os.path.join(save_path, f'seed{args.onlyrun_seed_id}')
-    save_fig_path = os.path.join(save_path, 'figs')
     os.makedirs(save_path, exist_ok=True)
-    os.makedirs(save_fig_path, exist_ok=True)
 
     root_dir = os.path.expanduser('~')
     alphamat_path = f'{root_dir}/GRU/alphamat/20250625/data/'
@@ -327,7 +325,6 @@ if __name__ == "__main__":
             
             pred_label = pd.concat([label, score], axis=1, sort=True).reindex(score.index)
             pred_label_list.append(pred_label)
-            
             
             # 保存图片 - 使用多种方法
             fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
