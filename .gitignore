@@ -23,6 +23,8 @@ db*
 .vim
 .nvimrc
 .vscode
+*.out
+
 
 qlib/VERSION.txt
 qlib/data/_libs/expanding.cpp

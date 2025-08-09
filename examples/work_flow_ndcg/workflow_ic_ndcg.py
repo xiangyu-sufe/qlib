@@ -111,10 +111,10 @@ if __name__ == "__main__":
         if args.ohlc:
             a = time.time()
             ohlc = read_ohlc()
-            minute = read_minute()
+            if args.minute:
+                minute = read_minute()
             labels = read_label(day=10, method = 'win+neu+zscore')
             data = ohlc.join(minute, how='left').join(labels, how='left')
-            
             data.columns = pd.MultiIndex.from_tuples(
                 [('feature', col) for col in ohlc.columns] 
                 + [('feature', col) for col in minute.columns] 
@@ -227,6 +227,7 @@ if __name__ == "__main__":
                     "save_path": f"{save_path}/task_{task_id}",
                     "step_len": args.step_len,
                     "ohlc": args.ohlc,
+                    "minute": args.minute,
                     "id": task_id,
                 },
             },
