@@ -65,6 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--gpu", type=int, default=0,)
     parser.add_argument("--alpha158", action="store_true",  help="Use alpha158 data")
     parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
+    parser.add_argument("--minute", action="store_true",  help="Use minute data")
     # 数据集长度参数
     parser.add_argument("--train_length", type=int, default=720, help="Training dataset length")
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
@@ -109,6 +110,7 @@ if __name__ == "__main__":
         if args.ohlc:
             a = time.time()
             ohlc = read_ohlc()
+            
             labels = read_label(day=10, method = 'win+neu+zscore')
             data = ohlc.join(labels, how='left')
             

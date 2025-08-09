@@ -41,13 +41,15 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   compute_layerwise_grad_norm,
                                   IndexedSeqDataset,
                                   make_collate_fn,
+                                  make_varlen_collate_fn,
                                   process_ohlc_cuda,
                                   process_ohlc_batchwinsor,
                                   process_ohlc_batchnorm,
                                   process_ohlc_inf_nan_fill0_cuda, visualize_evals_result_general,
+                                  VarLenIndexedSeqDataset
                                   )
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
-    MIGAB1,
+    MIGAB1, MIGAB1VarLen
 )
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
@@ -371,7 +373,7 @@ class MIGA(Model):
         # 消融实验
         assert version in ("B1", "B2", "B3", "B4", "B5"), "version must be in (B1, B2, B3, B4, B5)"
         if version == "B1":
-            self.MIGA_model = MIGAB1(
+            self.MIGA_model = MIGAB1VarLen(
                 price_dim=self.d_feat,
                 news_dim=1024,
                 hidden_dim=self.hidden_size,
@@ -614,8 +616,8 @@ class MIGA(Model):
         sampler_train = DailyBatchSampler(dl_train)
         sampler_valid = DailyBatchSampler(dl_valid)
     
-        dl_train = IndexedSeqDataset(dl_train,news_store_path=self.news_store_path)
-        dl_valid = IndexedSeqDataset(dl_valid,news_store_path=self.news_store_path)
+        dl_train = VarLenIndexedSeqDataset(dl_train,news_store_path=self.news_store_path)
+        dl_valid = VarLenIndexedSeqDataset(dl_valid,news_store_path=self.news_store_path)
 
         if reweighter is None:
             wl_train = np.ones(len(dl_train))
@@ -635,9 +637,9 @@ class MIGA(Model):
             dl_train,
             batch_sampler=sampler_train,
             num_workers=self.n_jobs,
-            collate_fn=make_collate_fn(),
+            collate_fn=make_varlen_collate_fn(),
             pin_memory=True,
-            prefetch_factor=2,
+            prefetch_factor=2 if self.n_jobs > 0 else None,
             persistent_workers=True,
             worker_init_fn=seed_worker,
             generator=_generator,
@@ -646,9 +648,9 @@ class MIGA(Model):
             dl_valid,
             batch_sampler=sampler_valid,
             num_workers=self.n_jobs,
-            collate_fn=make_collate_fn(),
+            collate_fn=make_varlen_collate_fn(),
             pin_memory=True,
-            prefetch_factor=2,
+            prefetch_factor=2 if self.n_jobs > 0 else None,
             persistent_workers=True,
             worker_init_fn=seed_worker,
             generator=_generator,
