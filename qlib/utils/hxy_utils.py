@@ -643,9 +643,116 @@ class IndexedSeqDataset(torch.utils.data.Dataset):
 
             return inst, dts, torch.tensor(price_feat), news, mask
         
-        
-    
-# =============== 
+# 可变长度新闻：新增实现（不影响现有类与函数）
+
+def _fetch_news_seq_varlen(store: "NewsStore", inst: str, dts_seq, dim_news: int):
+    """
+    返回:
+      - news_varlen: Tensor [L, Dn] 仅包含存在的新闻向量；若无新闻，返回 [0, Dn]
+      - day_mask:    BoolTensor [T]   True 表示该自然日缺失新闻，False 表示存在新闻
+    说明:
+      给定样本时间窗口 dts_seq（含 None 占位），我们将其映射到自然日区间 [st, et]，长度为 T，
+      day_mask 标记每个日子是否有新闻；news_varlen 中的行与 day_mask 中 False 的位置一一对应（按时间顺序）。
+    """
+    et = dts_seq[-1]
+    st = None
+    for dt in dts_seq:
+        if dt is not None:
+            st = dt
+            break
+    if st is None:
+        return torch.empty(0, dim_news), torch.empty(0, dtype=torch.bool)
+    dts_full = list(pd.date_range(st, et, freq='D'))
+    vecs = []
+    mask_list = []  # True 表示该天没有新闻
+    for dt in dts_full:
+        val = store._fetch(inst, dt)
+        if val is not None:
+            vecs.append(val)
+            mask_list.append(False)
+        else:
+            mask_list.append(True)
+    day_mask = torch.tensor(mask_list, dtype=torch.bool)
+    if len(vecs) == 0:
+        return torch.empty(0, dim_news), day_mask
+    return torch.stack(vecs), day_mask
+
+
+class VarLenIndexedSeqDataset(torch.utils.data.Dataset):
+    """
+    变长新闻版本的数据集。与 IndexedSeqDataset 并行存在，避免破坏原逻辑。
+    __getitem__ 返回: (inst, dts_seq, price_feat_tensor, news_varlen_tensor, day_mask)
+    其中 news_varlen_tensor 形如 [L_i, Dn]，不同样本 L_i 可不同。
+    """
+    def __init__(self, tsds: TSDatasetH, news_store_path, dim_news: int = 1024):
+        self.ds = tsds.ts_sampler if hasattr(tsds, "ts_sampler") else tsds
+        self.step_len = tsds.step_len
+        self.news_store_path = news_store_path
+        self.news_store = None
+        self.dim_news = dim_news
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        price_feat = self.ds[idx]
+        if isinstance(idx, (list, np.ndarray)):
+            insts, dts_seqs, news_list, mask_list = [], [], [], []
+            for single_idx in idx:
+                i, j = self.ds._get_row_col(single_idx)
+                rows = list(range(max(i - self.step_len + 1, 0), i + 1))
+                rows = [None] * (self.step_len - len(rows)) + rows
+                dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
+                inst = self.ds.idx_df.columns[j]
+                if self.news_store is None:
+                    self.news_store = NewsStore(self.news_store_path)
+                news, day_mask = _fetch_news_seq_varlen(self.news_store, inst, dts, self.dim_news)
+                insts.append(inst)
+                dts_seqs.append(dts)
+                news_list.append(news)
+                mask_list.append(day_mask)
+            return insts, dts_seqs, torch.tensor(price_feat), news_list, mask_list
+        else:
+            i, j = self.ds._get_row_col(idx)
+            rows = list(range(max(i - self.step_len + 1, 0), i + 1))
+            rows = [None] * (self.step_len - len(rows)) + rows
+            dts = [None if r is None else self.ds.idx_df.index[r] for r in rows]
+            inst = self.ds.idx_df.columns[j]
+            if self.news_store is None:
+                self.news_store = NewsStore(self.news_store_path)
+            news, day_mask = _fetch_news_seq_varlen(self.news_store, inst, dts, self.dim_news)
+            return inst, dts, torch.tensor(price_feat), news, day_mask
+
+
+def make_varlen_collate_fn():
+    """Collate 函数：
+    - 价格 price 堆叠
+    - 新闻以 list 形式原样传递 news_list
+    - 额外返回 day_mask_list（每样本 [T] 布尔向量），便于前向时重建 [T, D] 或构造 [T,D] 掩码
+    """
+    def collate_fn(batch):
+        insts, dts_seqs, price_feats, news_varlen, mask_list = zip(*batch)
+        price = torch.stack(price_feats)
+        # 新闻拼接为 [K, D]；当全部为空时，安全返回空张量 shape [0, D]
+        non_empty = [n for n in news_varlen if n.numel() > 0]
+        if len(non_empty) > 0:
+            news_concat = torch.cat(non_empty, dim=0)
+        else:
+            ref = news_varlen[0]
+            D = ref.size(-1)
+            news_concat = torch.empty(0, D, device=ref.device, dtype=ref.dtype)
+        # 尝试将 day_mask 堆叠为 [N, T]
+        lengths = [m.numel() if torch.is_tensor(m) else len(m) for m in mask_list]
+        if len(set(lengths)) == 1:
+            day_mask = torch.stack([m if torch.is_tensor(m) else torch.tensor(m, dtype=torch.bool) for m in mask_list], dim=0)
+            return price, news_concat, day_mask
+        else:
+            # 长度不等时，返回 list of mask
+            day_mask_list = [m if torch.is_tensor(m) else torch.tensor(m, dtype=torch.bool) for m in mask_list]
+            return price, news_concat, day_mask_list
+    return collate_fn
+
+
 def process_volume_winsor(data: torch.Tensor, N = 5):
     """
         对成交量进行 winsorize

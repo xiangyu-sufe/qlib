@@ -315,7 +315,7 @@ if __name__ == "__main__":
         label.columns = ["label"]
         # 拼接 label 和 score
         pred_label = pd.concat([label, score], axis=1, sort=True).reindex(score.index)
-        
+        pred_label_list.append(pred_label)
         # 保存图片 - 使用多种方法
         fig, _ = analysis_position.score_ic_graph(pred_label, show_notebook=False)
         try:
