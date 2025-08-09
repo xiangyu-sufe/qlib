@@ -243,7 +243,7 @@ class GRUNDCG(Model):
             optimizer=self.train_optimizer,
             mode='max',
             factor = 0.2,
-            patience = 3, 
+            patience = 5, 
             min_lr = 1e-5           # 学习率下限
         )
         self.fitted = False
