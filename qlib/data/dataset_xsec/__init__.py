@@ -5,9 +5,7 @@ import pandas as pd
 
 from ..dataset.handler import DataHandler, DataHandlerLP  # type: ignore
 from ..dataset import DatasetH  # type: ignore
-from ...utils import get_date_range, time_to_slc_point  # type: ignore
-from ...utils import np_ffill  # type: ignore
-from ...utils import lazy_sort_index  # type: ignore
+from ...utils import time_to_slc_point  # type: ignore
 from ...log import get_module_logger  # type: ignore
 from ..dataset.utils import get_level_index  # type: ignore
 
@@ -57,14 +55,6 @@ class CSDataSampler:
 
         # Build calendar (ordered unique dates) within extended window so that step_len backfill works
         all_dates = self.data.index.get_level_values(0).unique().sort_values()
-        if start is not None:
-            start_slc = time_to_slc_point(start)
-        else:
-            start_slc = None
-        if end is not None:
-            end_slc = time_to_slc_point(end)
-        else:
-            end_slc = None
         # keep full calendar; we'll filter indexable dates later
         self.calendar = all_dates
 
@@ -146,14 +136,28 @@ class CSDataSampler:
                 y_list.append(win_y.values[np.newaxis, ...])  # [1, step_len, Y]
         if len(X_list) == 0:
             # In rare case, no instrument valid on this date; raise or return empty
+            n_y = 0 if self.label_cols is None else len(self.label_cols)
             return {
                 "x": np.empty((0, self.step_len, len(self.feature_cols)), dtype=float),
-                "y": None if y_list is None else np.empty((0, self.step_len, len(self.label_cols))),
+                "y": None if y_list is None else np.empty((0, self.step_len, n_y)),
                 "index": index_list,
             }
         X = np.concatenate(X_list, axis=0)
         y = None if y_list is None else np.concatenate(y_list, axis=0)
         return {"x": X, "y": y, "index": index_list}
+
+    # Compatibility helpers
+    def get_index(self) -> pd.MultiIndex:
+        """
+        Align with TSDataSampler.get_index(): return MultiIndex in order <datetime, instrument>.
+        Useful for external code that needs to know the index mapping.
+        """
+        return self.data.index
+
+    @property
+    def empty(self) -> bool:
+        """Mimic pandas.DataFrame.empty: True if no indexable samples."""
+        return len(self) == 0
 
 
 class CSDatasetH(DatasetH):
