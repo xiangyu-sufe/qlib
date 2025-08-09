@@ -425,7 +425,7 @@ class MIGAB1VarLen(nn.Module):
         frozen: bool = False,
         model_path: Optional[str] = None,
         padding_method: str = "zero",
-        min_news: int = 5,
+        min_news: int = 10,
     ):
         super().__init__()
         self.min_news = min_news
@@ -616,6 +616,106 @@ class MIGAB1VarLen(nn.Module):
             news_h = news_h[:, -1, :]
             news_out[~news_insufficient] = news_h
 
+        price_news = torch.cat([price_out, news_out], dim=1)
+        # price_news = self.ln(price_news)
+        out = self.fc_out(price_news).squeeze(-1)
+
+        return {
+            "predictions": out,
+            "routing_weights": None,
+            "hidden_representations": None,
+            "top_k_indices": None,
+            "routing_weights_flat": None,
+        }
+
+class NewsPriceCrossAttn(nn.Module):
+    """
+    Cross-Attention: News as Query, Price as Key/Value.
+    Output sequence length follows news length, suitable for feeding into news GRU.
+    """
+    def __init__(self, d_news: int, d_price: int, d_model: int, n_heads: int = 4, dropout: float = 0.0):
+        super().__init__()
+        self.q_proj = nn.Linear(d_news, d_model)
+        self.kv_proj = nn.Linear(d_price, d_model)
+        self.cross_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout, batch_first=True)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.ln = nn.LayerNorm(d_model)
+
+    def forward(self, news: torch.Tensor, price: torch.Tensor) -> torch.Tensor:
+        # news: [N, Tn, D_news] as Query
+        # price: [N, Tp, D_price] as Key/Value
+        q = self.q_proj(news)
+        kv = self.kv_proj(price)
+        attn_out, _ = self.cross_attn(query=q, key=kv, value=kv)
+        fused = self.ln(q + self.resid_dropout(attn_out))
+        return fused
+
+class MIGAB1VarLenCrossAttn(MIGAB1VarLen):
+    """
+    在 MIGAB1VarLen 基础上加入 Cross-Attention：以新闻为 Query，价格为 Key/Value。
+    Cross-Attention 输出序列长度与新闻一致，可直接送入 news GRU。
+
+    其他逻辑（变长新闻处理、最少新闻条数过滤、price/news 双分支拼接）保持与父类一致。
+    """
+    def __init__(
+        self,
+        price_dim: int,
+        news_dim: int,
+        hidden_dim: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.0,
+        frozen: bool = False,
+        model_path: Optional[str] = None,
+        padding_method: str = "zero",
+        min_news: int = 10,
+        n_heads: int = 4,
+        d_model: Optional[int] = None,
+    ):
+        super().__init__(
+            price_dim=price_dim,
+            news_dim=news_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            frozen=frozen,
+            model_path=model_path,
+            padding_method=padding_method,
+            min_news=min_news,
+        )
+        self.d_model = news_dim if d_model is None else d_model
+        # Cross-Attn 输出维度对齐到 d_model，如与 news_dim 不同则添加适配层
+        self.cross_attn_np = NewsPriceCrossAttn(d_news=news_dim, d_price=price_dim, d_model=self.d_model, n_heads=n_heads, dropout=dropout)
+
+    def forward(
+        self,
+        price: torch.Tensor,
+        news: Union[List[torch.Tensor], torch.Tensor],
+        mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
+    ):
+        N_price, T_price, _ = price.shape
+
+        # 准备变长新闻张量与掩码
+        news_tensor, mask_n = self._prepare_news_inputs(news, mask, price.device)
+
+        # 统计与最少新闻过滤
+        _, news_insufficient = self._compute_news_length_and_filter(mask_n, price.device)
+        self.update_count((~news_insufficient).sum().item(), N_price)
+
+        # 价格分支
+        price_out, _ = self.gru_price(price)
+        price_out = price_out[:, -1, :]
+
+        # 新闻分支：先做 Cross-Attn(News<-Price)，再进新闻 GRU
+        news_out = torch.zeros((N_price, self.hidden_dim), device=price.device)
+        if (~news_insufficient).any() and news_tensor.numel() > 0:
+            news_valid = news_tensor[~news_insufficient]      # [N_sub, Tn, D_news]
+            price_sub = price[~news_insufficient]             # [N_sub, Tp, D_price]
+            fused_seq = self.cross_attn_np(news_valid, price_sub)  # [N_sub, Tn, d_model]
+            news_h, _ = self.gru_news(fused_seq)                   # [N_sub, Tn, H]
+            news_h = news_h[:, -1, :]
+            news_out[~news_insufficient] = news_h
+
+        # 融合输出
         price_news = torch.cat([price_out, news_out], dim=1)
         price_news = self.ln(price_news)
         out = self.fc_out(price_news).squeeze(-1)
