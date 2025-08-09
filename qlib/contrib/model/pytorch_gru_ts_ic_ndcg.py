@@ -125,6 +125,7 @@ class GRUNDCG(Model):
         weight=0.7,
         combine_type='mult',
         ohlc=False,
+        minute=True,
         display_list=['loss', 'ic', 'rankic', 'ndcg', 'topk_return'],
         id=0,
         **kwargs,
@@ -318,7 +319,10 @@ class GRUNDCG(Model):
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc_cuda(feature)
+                if self.minute:
+                    feature = process_minute_cuda(feature)
+                else:
+                    feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
                 feature = process_ohlc_batchnorm(feature)
                 feature = process_ohlc_inf_nan_fill0_cuda(feature)

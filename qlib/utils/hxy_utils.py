@@ -440,6 +440,8 @@ def read_minute():
     df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
     df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)    
     
+    return df
+
 # ==================== 处理新闻新增
 
 # ========== 写入新闻数据 向量索引存储 LMDB
@@ -794,6 +796,19 @@ def process_ohlc_cuda(x: torch.Tensor):
     
     return x
 
+def process_minute_cuda(x: torch.Tensor):
+    # 0-5 6-10 
+    assert x.is_cuda, "input must be on GPU"
+    # 价格归一化
+    last_price = x[:, -1:, :1]          # (B,1,1)
+    x[:, :, :5].div_(last_price)        # 原地除法，显存零拷贝  
+    x[:, :, 6:11].div_(last_price)
+    # 成交量归一化
+    last_vol = x[:, -1:, 5:6]           # (B,1,1)
+    x[:, :, 5:6].div_(last_vol)    
+    
+    return x
+
 # def process_ohlc_batchwinsor(data: torch.Tensor):
 #     # ohlc: (N, T, 6)
 #     ohlc = data[:, :, :6]  # N, T, 6
@@ -815,7 +830,8 @@ def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
     assert data.is_cuda, "input must be on GPU"
     N_batch, T, D = data.shape
     assert D >= 6, "输入特征维度应≥6"
-    reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
+    
+    reshaped = data.reshape(-1, D)  # (N*T, D)
     
     medians = torch.nanmedian(reshaped.cpu(), dim=0).values.to(reshaped.device)  # (6,)
     abs_dev = torch.abs(reshaped - medians)
@@ -827,7 +843,7 @@ def process_ohlc_batchwinsor(data: torch.Tensor, N=5):
     # 广播 clip
     clipped = torch.clamp(reshaped, lower, upper)
     
-    data[:, :, :6] = clipped.reshape(N_batch, T, 6)
+    data = clipped.reshape(N_batch, T, D)
 
     return data
     
@@ -845,14 +861,14 @@ def process_ohlc_batchnorm(data: torch.Tensor):
     N_batch, T, D = data.shape
     assert D >= 6, "输入特征维度应≥6"
 
-    reshaped = data[:, :, :6].reshape(-1, 6)  # (N*T, 6)
+    reshaped = data.reshape(-1, D)  # (N*T, D)
     
     mean = torch.nanmean(reshaped, dim=0)
     std = torch_nanstd(reshaped, dim=0)
     
     # 标准化处理并重塑回原始形状
     normalized = (reshaped - mean) / std
-    data[:, :, :6] = normalized.reshape(N_batch, T, 6)
+    data = normalized.reshape(N_batch, T, D)
     
     return data
 
