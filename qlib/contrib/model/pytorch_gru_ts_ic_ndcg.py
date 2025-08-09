@@ -37,7 +37,7 @@ from ..loss.ndcg import (compute_lambda_gradients, calculate_ndcg_optimized, ran
 from ..loss.loss import ic_loss, rankic_loss, topk_ic_loss, topk_rankic_loss, topk_return
 from qlib.utils.color import *
 from qlib.utils.hxy_utils import (
-    compute_grad_norm, compute_layerwise_grad_norm, process_ohlc_cuda,
+    compute_grad_norm, compute_layerwise_grad_norm, process_ohlc_cuda, process_minute_cuda,
     apply_mask_preserve_norm, process_ohlc_batchnorm, scale_preserve_sign_torch,
     process_ohlc_minmax, process_ohlc_inf_nan_fill0_cuda, process_ohlc_batchwinsor,
     visualize_evals_result_general, 
@@ -164,10 +164,13 @@ class GRUNDCG(Model):
         self.combine_type = combine_type
         self.weight = weight
         self.ohlc = ohlc
+        self.minute = minute
         self.step_len = step_len
         self.display_list = display_list
         if self.ohlc:
             self.logger.info(Fore.RED + "使用OHLC数据, 默认为前 6 个特征" + Style.RESET_ALL)
+        if self.minute:
+            self.logger.info(Fore.RED + "使用分钟数据" + Style.RESET_ALL)
         self.logger.info(Fore.RED + "use GPU: %s" % str(self.device) + Style.RESET_ALL)
         self.logger.info(Fore.RED + ("Debug Mode" if self.debug else "RUN Mode") + Style.RESET_ALL)
         self.logger.info(
@@ -368,14 +371,14 @@ class GRUNDCG(Model):
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
             # 手动更新梯度
             # self.logger.debug(f"\n 手动更新梯度")
-            with torch.no_grad():
-                lr = self.train_optimizer.param_groups[0]['lr']
-                for p in self.GRU_model.parameters():
-                    if p.grad is not None:
-                        p.data -= lr * p.grad
+            # with torch.no_grad():
+            #     lr = self.train_optimizer.param_groups[0]['lr']
+            #     for p in self.GRU_model.parameters():
+            #         if p.grad is not None:
+            #             p.data -= lr * p.grad
             # 优化器更新梯度
             # self.logger.debug(f"\n 优化器{self.optimizer}更新梯度")
-            # self.train_optimizer.step()
+            self.train_optimizer.step()
             # 更新完后记录下梯度
             if self.debug:
                 grad_norm = compute_grad_norm(self.GRU_model)
