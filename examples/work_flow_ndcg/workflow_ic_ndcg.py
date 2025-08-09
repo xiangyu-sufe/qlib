@@ -17,6 +17,7 @@ from qlib.utils.hxy_utils import (get_label,
                                   prepare_task_pool, 
                                   read_alpha64, 
                                   read_ohlc,
+                                  read_minute,
                                   read_label,
                                   custom_serializer,
                                   is_month_end_trade_day)
@@ -109,11 +110,13 @@ if __name__ == "__main__":
         if args.ohlc:
             a = time.time()
             ohlc = read_ohlc()
+            minute = read_minute()
             labels = read_label(day=10, method = 'win+neu+zscore')
-            data = ohlc.join(labels, how='left')
+            data = ohlc.join(minute, how='left').join(labels, how='left')
             
             data.columns = pd.MultiIndex.from_tuples(
                 [('feature', col) for col in ohlc.columns] 
+                + [('feature', col) for col in minute.columns] 
                 + [('label', col) for col in labels.columns]
                 )
             print("读取所有数据用时: ", time.time() - a)
