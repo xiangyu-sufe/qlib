@@ -111,15 +111,25 @@ if __name__ == "__main__":
         if args.ohlc:
             a = time.time()
             ohlc = read_ohlc()
+            labels = read_label(day=10, method = 'win+neu+zscore')
             if args.minute:
                 minute = read_minute()
-            labels = read_label(day=10, method = 'win+neu+zscore')
-            data = ohlc.join(minute, how='left').join(labels, how='left')
-            data.columns = pd.MultiIndex.from_tuples(
-                [('feature', col) for col in ohlc.columns] 
-                + [('feature', col) for col in minute.columns] 
-                + [('label', col) for col in labels.columns]
-                )
+                data = ohlc.join(minute, how='left')
+            else:
+                data = ohlc
+            data = data.join(labels, how='left')
+            if args.minute:
+                data.columns = pd.MultiIndex.from_tuples(
+                    [('feature', col) for col in ohlc.columns] 
+                    + [('feature', col) for col in minute.columns] if args.minute else []
+                    + [('label', col) for col in labels.columns]
+                    )
+            else:
+                data.columns = pd.MultiIndex.from_tuples(
+                    [('feature', col) for col in ohlc.columns] 
+                    + [('label', col) for col in labels.columns]
+                    )
+            # 读取市场数据
             print("读取所有数据用时: ", time.time() - a)
             print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
             # 创建 DataLoader
@@ -203,7 +213,7 @@ if __name__ == "__main__":
         task = {
             "model": {
                 "class": "GRUNDCG",
-                "module_path": "qlib.contrib.model.pytorch_gru_ts_ic_ndcg",
+                "module_path": "qlib.contrib.model.pytorch_gru_ts_ic_ndcg_test",
                 "kwargs": {
                     "d_feat": args.d_feat,
                     "hidden_size": 64,
@@ -245,8 +255,8 @@ if __name__ == "__main__":
                     "drop_raw": True,
                 }   
                 task["dataset"] = {
-                    "class": "TSDatasetH",
-                    "module_path": "qlib.data.dataset",
+                    "class": "CSDatasetH",
+                    "module_path": "qlib.data.dataset_xsec",
                     "kwargs": {
                         "handler": {
                             "class": "DataHandlerLP",
