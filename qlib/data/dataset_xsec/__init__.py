@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from ..dataset.handler import DataHandler, DataHandlerLP  # type: ignore
+from ..dataset import DatasetH  # type: ignore
 from ...utils import get_date_range, time_to_slc_point  # type: ignore
 from ...utils import np_ffill  # type: ignore
 from ...utils import lazy_sort_index  # type: ignore
@@ -155,23 +156,33 @@ class CSDataSampler:
         return {"x": X, "y": y, "index": index_list}
 
 
-class CSDatasetH:
+class CSDatasetH(DatasetH):
     """
-    Dataset wrapper to create CSDataSampler from a DataHandler, similar in spirit to TSDatasetH but for cross-section sampling.
+    DatasetH subclass that prepares cross-sectional samples via CSDataSampler.
+    Keeps the one-date-per-item behavior and <datetime, instrument> primary ordering.
     """
 
     DEFAULT_STEP_LEN = 30
 
-    def __init__(self, handler: Union[Dict, DataHandler], segments: Dict[str, Tuple], fetch_kwargs: Dict = {}, step_len: int = DEFAULT_STEP_LEN):
-        from ...utils import init_instance_by_config  # late import to avoid cycles
-        self.handler: DataHandler = init_instance_by_config(handler, accept_types=DataHandler)
-        self.segments = segments.copy()
-        self.fetch_kwargs = dict(fetch_kwargs)
-        self.step_len = step_len
-
-    def prepare(
+    def __init__(
         self,
-        segments: Union[List[str], Tuple[str], str, slice, pd.Index],
+        handler: Union[Dict, DataHandler],
+        segments: Dict[str, Tuple],
+        fetch_kwargs: Dict = {},
+        step_len: int = DEFAULT_STEP_LEN,
+        **kwargs,
+    ):
+        self.step_len = step_len
+        super().__init__(handler=handler, segments=segments, fetch_kwargs=fetch_kwargs, **kwargs)
+
+    def config(self, handler_kwargs: dict = None, step_len: Optional[int] = None, **kwargs):
+        if step_len is not None:
+            self.step_len = int(step_len)
+        super().config(handler_kwargs=handler_kwargs, **kwargs)
+
+    def _prepare_seg(
+        self,
+        slc,
         col_set=DataHandler.CS_ALL,
         data_key=DataHandlerLP.DK_I,
         fillna_type: str = "none",
@@ -180,17 +191,11 @@ class CSDatasetH:
         flt_col: Optional[str] = None,
         **kwargs,
     ) -> CSDataSampler:
-        # resolve segment slice
-        def _fetch_seg(slc, **k):
-            if hasattr(self, "fetch_kwargs"):
-                return self.handler.fetch(slc, **k, **self.fetch_kwargs)
-            else:
-                return self.handler.fetch(slc, **k)
-
-        if isinstance(segments, str) and segments in self.segments:
-            df = _fetch_seg(self.segments[segments], col_set=col_set, data_key=data_key)
+        # fetch dataframe from handler
+        if hasattr(self, "fetch_kwargs"):
+            df = self.handler.fetch(slc, col_set=col_set, data_key=data_key, **self.fetch_kwargs)
         else:
-            df = _fetch_seg(segments, col_set=col_set, data_key=data_key)
+            df = self.handler.fetch(slc, col_set=col_set, data_key=data_key)
 
         # df index expected as <datetime, instrument>
         df = df.sort_index()
@@ -207,16 +212,17 @@ class CSDatasetH:
         if label_cols is None and "label" in df.columns and data_key != DataHandlerLP.DK_I:
             label_cols = ["label"]
 
-        # derive start/end from segment
-        if isinstance(segments, str) and segments in self.segments:
-            start, end = self.segments[segments]
-        elif isinstance(segments, (list, tuple)):
-            start, end = segments[0]
-        else:
-            # slice or index; try best effort
-            try:
-                start, end = segments.start, segments.stop
-            except Exception:
+        # derive start/end from slc
+        try:
+            start, end = slc.start, slc.stop
+        except Exception:
+            # If slc is a tuple like (start, end) or a named segment tuple
+            if isinstance(slc, (list, tuple)):
+                try:
+                    start, end = slc[0]
+                except Exception:
+                    start, end = None, None
+            else:
                 start, end = None, None
 
         return CSDataSampler(
@@ -230,6 +236,16 @@ class CSDatasetH:
             feature_cols=feature_cols,
             label_cols=label_cols,
         )
+
+    def prepare(
+        self,
+        segments: Union[List[str], Tuple[str], str, slice, pd.Index],
+        col_set=DataHandler.CS_ALL,
+        data_key=DataHandlerLP.DK_I,
+        **kwargs,
+    ) -> Union[List[CSDataSampler], CSDataSampler]:
+        # Delegate to DatasetH.prepare, which will call our _prepare_seg under the hood
+        return super().prepare(segments=segments, col_set=col_set, data_key=data_key, **kwargs)
 
 
 __all__ = [

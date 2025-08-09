@@ -5,6 +5,33 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+class AddGateFusion(nn.Module):
+    def __init__(self, feat_dim):
+        super().__init__()
+
+    def forward(self, price_feat, news_feat, mask):
+        # price_feat, news_feat: [N, D]
+        # mask: [N, 1], 0/1
+        gated_news = mask * news_feat
+        return price_feat + gated_news
+
+class LearnableAddGateFusion(nn.Module):
+    def __init__(self, feat_dim, hidden_dim=64):
+        super().__init__()
+        self.proj_news = nn.Linear(feat_dim, feat_dim)
+        self.gate_net = nn.Sequential(
+            nn.Linear(feat_dim + 1, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, feat_dim),
+            nn.Sigmoid()
+        )
+
+    def forward(self, price_feat, news_feat, mask):
+        news_feat = self.proj_news(news_feat)
+        gate_input = torch.cat([price_feat, mask], dim=-1)
+        g = self.gate_net(gate_input) * mask  # mask 保证缺新闻时 g=0
+        return price_feat + g * news_feat
+
 
 class MIGAB1(nn.Module):
     """
@@ -459,6 +486,7 @@ class MIGAB1VarLen(nn.Module):
 
         self.ln = nn.LayerNorm(hidden_dim * 2)
         self.fc_out = nn.Linear(hidden_dim * 2, 1)
+        self.add_gate = AddGateFusion(hidden_dim)
 
     def reset_count(self):
         self.news_count = []
@@ -650,7 +678,7 @@ class NewsPriceCrossAttn(nn.Module):
         fused = self.ln(q + self.resid_dropout(attn_out))
         return fused
 
-class MIGAB1VarLenCrossAttn(MIGAB1VarLen):
+class MIGAB2VarLenCrossAttn(MIGAB1VarLen):
     """
     在 MIGAB1VarLen 基础上加入 Cross-Attention：以新闻为 Query，价格为 Key/Value。
     Cross-Attention 输出序列长度与新闻一致，可直接送入 news GRU。
@@ -684,6 +712,13 @@ class MIGAB1VarLenCrossAttn(MIGAB1VarLen):
         )
         self.d_model = news_dim if d_model is None else d_model
         # Cross-Attn 输出维度对齐到 d_model，如与 news_dim 不同则添加适配层
+        self.gru_news = nn.GRU(
+            input_size=self.d_model,
+            hidden_size=self.hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout,
+        )        
         self.cross_attn_np = NewsPriceCrossAttn(d_news=news_dim, d_price=price_dim, d_model=self.d_model, n_heads=n_heads, dropout=dropout)
 
     def forward(
