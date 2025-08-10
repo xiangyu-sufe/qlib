@@ -750,10 +750,10 @@ class MIGAB2VarLenCrossAttn(MIGAB1VarLen):
             news_h = news_h[:, -1, :]
             news_out[~news_insufficient] = news_h
 
-        # 融合输出
-        price_news = torch.cat([price_out, news_out], dim=1)
-        price_news = self.ln(price_news)
-        out = self.fc_out(price_news).squeeze(-1)
+        # 融合输出（gate 融合，与父类保持一致）：
+        # 使用 (~news_insufficient).unsqueeze(1) 作为有效性的 mask，引导门控在无新闻时更依赖 price_out
+        out_hidden = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
+        out = self.fc_out(out_hidden).squeeze(-1)
 
         return {
             "predictions": out,
