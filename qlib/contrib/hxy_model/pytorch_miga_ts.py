@@ -452,7 +452,7 @@ class MIGAB1VarLen(nn.Module):
         frozen: bool = False,
         model_path: Optional[str] = None,
         padding_method: str = "zero",
-        min_news: int = -1,
+        min_news: int = 10,
     ):
         super().__init__()
         self.min_news = min_news
