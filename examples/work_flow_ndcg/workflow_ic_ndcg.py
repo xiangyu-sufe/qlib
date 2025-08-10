@@ -111,17 +111,25 @@ if __name__ == "__main__":
         # 读取量价数据
         if args.ohlc:
             a = time.time()
-            ohlc = read_ohlc()
-            if args.minute:
-                minute = read_minute1(processed=True)
-                print("使用过滤后的分钟数据集")
+            ohlc = read_ohlc() # 读取高开低收
             labels = read_label(day=10, method = 'win+neu+zscore')
-            data = ohlc.join(minute, how='left').join(labels, how='left')
-            data.columns = pd.MultiIndex.from_tuples(
-                [('feature', col) for col in ohlc.columns] 
-                + [('feature', col) for col in minute.columns] 
-                + [('label', col) for col in labels.columns]
-                )
+            if args.minute:
+                minute = read_minute1(processed=True) 
+                print("使用过滤后的分钟数据集")
+                data = ohlc.join(minute, how='left').join(labels, how='left')
+                data.columns = pd.MultiIndex.from_tuples(
+                    [('feature', col) for col in ohlc.columns] 
+                    + [('feature', col) for col in minute.columns] 
+                    + [('label', col) for col in labels.columns]
+                    )
+            else:
+                print("仅使用 ohlcv数据集")
+                data = ohlc.join(labels, how='left')
+                data.columns = pd.MultiIndex.from_tuples(
+                    [('feature', col) for col in ohlc.columns] 
+                    + [('label', col) for col in labels.columns]
+                    )            
+
             print("读取所有数据用时: ", time.time() - a)
             print(f"量价数据占用内存大小: {data.memory_usage().sum() / 1e6} MB")
             # 创建 DataLoader
