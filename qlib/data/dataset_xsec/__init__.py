@@ -2,27 +2,28 @@ from typing import List, Tuple, Dict, Optional, Union
 
 import numpy as np
 import pandas as pd
-
+from copy import deepcopy
+from tqdm import tqdm
 from ..dataset.handler import DataHandler, DataHandlerLP  # type: ignore
 from ..dataset import DatasetH  # type: ignore
 from ...utils import time_to_slc_point  # type: ignore
 from ...log import get_module_logger  # type: ignore
 from ..dataset.utils import get_level_index  # type: ignore
+from ...utils import np_ffill, lazy_sort_index  # type: ignore
 
 
 class CSDataSampler:
     """
-    Cross-Sectional (datetime-first) Data Sampler.
+    Datetime-major variant of TSDataSampler.
 
-    - data is indexed by MultiIndex [datetime, instrument] and sorted by <datetime, instrument>.
-    - Each __getitem__(i) returns the cross-section (one date) with step_len historical window per instrument:
-        X: [N_inst_t, step_len, n_feat]
-        y: [N_inst_t, step_len, n_y] if label_cols specified; else None
-        index: List[(datetime, instrument)] length N_inst_t
-    - fillna_type: 'none' | 'ffill' | 'ffill+bfill' (per-instrument along time)
-    - One batch = one date (recommended); no padding required.
+    - Data index: MultiIndex [datetime, instrument], sorted by (datetime, instrument).
+    - Sample definition: identical to TSDataSampler — one instrument at one day with a time window.
+    - Difference from TSDataSampler: memory layout is datetime-major (same-day stocks are contiguous).
+
+    Returns from __getitem__ follow TSDataSampler: a numpy array window of shape
+    [step_len, n_columns] for a single sample, or [batch, step_len, n_columns] for a batch.
     """
-
+    
     def __init__(
         self,
         data: pd.DataFrame,
@@ -36,115 +37,191 @@ class CSDataSampler:
         label_cols: Optional[List[str]] = None,
     ):
         assert get_level_index(data, "datetime") == 0, "expect MultiIndex level 0 to be datetime"
-        # ensure sorted by (datetime, instrument)
+        # Ensure sorted by (datetime, instrument)
         self.data = data.sort_index().copy()
-        if feature_cols is None:
-            feature_cols = list(self.data.columns)
-        self.feature_cols = feature_cols
-        self.label_cols = label_cols
-
-        # Optional filtering by flt_data (aligned with data index)
-        if flt_data is not None:
-            flt_idx = flt_data[flt_data.astype(bool)].index
-            self.data = self.data.loc[self.data.index.intersection(flt_idx)]
+        # Optional dtype cast
+        if dtype is not None:
+            self.data = self.data.astype(dtype)
 
         self.step_len = int(step_len)
         self.fillna_type = fillna_type
         self.start = start
         self.end = end
+        self.logger = get_module_logger("CSDataSampler")
 
-        # Build calendar (ordered unique dates) within extended window so that step_len backfill works
-        all_dates = self.data.index.get_level_values(0).unique().sort_values()
-        # keep full calendar; we'll filter indexable dates later
-        self.calendar = all_dates
+        # Build data_arr (datetime-major) and append a NaN row for padding
+        kwargs = {"object": self.data}
+        if dtype is not None:
+            kwargs["dtype"] = dtype
+        self.data_arr = np.array(**kwargs)
 
-        # Instruments universe
+        nan_row = np.full((1, self.data_arr.shape[1]), np.nan, dtype=self.data_arr.dtype)
+        self.data_arr = np.append(self.data_arr, nan_row, axis=0)
+        self.nan_idx = self.data_arr.shape[0] - 1
+
+        # Universe and calendar
+        self.calendar = self.data.index.get_level_values(0).unique().sort_values()
         self.instruments = self.data.index.get_level_values(1).unique().tolist()
 
-        # Cast to numpy-friendly types if requested
-        if dtype is not None:
-            self.data = self.data.astype(dtype)
+        # Optional sample-level filtering before slicing start/end
+        self.flt_data = flt_data
+        assert flt_data is None, "CSDataSampler does not support sample-level filtering"
+        # Build indices
+        self.idx_df, idx_map_dict = self.build_index(self.data)
+        self.data_index = deepcopy(self.data.index)
+        # Convert dict -> array of (row, col) aligned by sorted key of real_idx
+        self.idx_map = self.idx_map2arr(idx_map_dict)
+        # Slice by start/end
+        self.idx_map, self.data_index = self.slice_idx_map_and_data_index(
+            self.idx_map, self.idx_df, self.data.index, self.start, self.end
+        )
+        # Apply boolean filtering if provided
+        if self.flt_data is not None:
+            self.idx_map = self.flt_idx_map(self.flt_data, self.idx_map)
 
-        # Precompute per-instrument time series DataFrames for efficient slicing
-        # Each: index = dates, columns = feature_cols (+ label_cols if provided will be handled on-demand)
-        self._per_inst: Dict[str, pd.DataFrame] = {}
-        for inst, df_inst in self.data.groupby(level=1):
-            ts = df_inst.droplevel(1).reindex(self.calendar)  # align to full calendar
-            # Apply fillna strategy on features (and labels later similarly)
-            if self.fillna_type in ("ffill", "ffill+bfill"):
-                ts = ts.ffill()
-                if self.fillna_type == "ffill+bfill":
-                    ts = ts.bfill()
-            self._per_inst[inst] = ts
+        # Cache array view of idx_df for fast window construction
+        self.idx_arr = np.array(self.idx_df.values, dtype=np.float64)
+        del self.data  # save memory
 
-        # Determine indexable dates: those with at least one instrument having a full step_len window
-        idxable_dates = []
-        for i in range(self.step_len - 1, len(self.calendar)):
-            dt = self.calendar[i]
-            w_start = self.calendar[i - self.step_len + 1]
-            # check existence for any instrument
-            ok_any = False
-            for inst in self.instruments:
-                ts = self._per_inst.get(inst)
-                if ts is None:
-                    continue
-                window = ts.loc[w_start:dt, self.feature_cols]
-                if len(window) == self.step_len and (self.fillna_type != "none" or not window.isna().any().any()):
-                    ok_any = True
-                    break
-            if ok_any:
-                idxable_dates.append(dt)
-        # Apply start/end on indexable dates
-        if start is not None:
-            idxable_dates = [d for d in idxable_dates if d >= pd.Timestamp(start)]
-        if end is not None:
-            idxable_dates = [d for d in idxable_dates if d <= pd.Timestamp(end)]
+    def build_index(self, data: pd.DataFrame):
+        """
+        Build idx_df and idx_map dict just like TSDataSampler, but keep rows=datetime, cols=instrument.
 
-        self.idx_dates: List[pd.Timestamp] = idxable_dates
-        self.logger = get_module_logger("CSDataSampler")
-        self.logger.info(f"CSDataSampler built with {len(self.idx_dates)} cross-sectional samples; step_len={self.step_len}")
+        idx_df: DataFrame with shape [n_dates, n_instruments], each cell is the flat row index of data_arr
+                (i.e., positional index in data with MultiIndex [datetime, instrument]). Missing pairs are NaN.
+        idx_map: dict mapping real_idx (flat row index) -> (row_idx, col_idx) in idx_df
+        """
+        # Series of flat indices aligned with MultiIndex
+        idx_df = pd.Series(range(data.shape[0]), index=data.index, dtype=object)
+        # Ensure sorted rows/cols
+        idx_df = lazy_sort_index(idx_df.unstack())
+        # NOTE: the correctness of `__getitem__` depends on columns sorted here
+        idx_df = lazy_sort_index(idx_df, axis=1)
+
+        # Build mapping real_idx -> (row_idx, col_idx)
+        idx_map: Dict[int, Tuple[int, int]] = {}
+        for i, (_, row) in tqdm(enumerate(idx_df.iterrows()), "Building idx_map By Day"):
+            for j, real_idx in enumerate(row):
+                if not np.isnan(real_idx):
+                    idx_map[int(real_idx)] = (i, j)
+        return idx_df, idx_map
+
+    @staticmethod
+    def slice_idx_map_and_data_index(idx_map: np.ndarray, idx_df: pd.DataFrame, data_index: pd.MultiIndex, start, end):
+        """
+        Slice idx_map (2D array of [row_idx, col_idx]) by start/end dates using idx_df row index.
+        Returns filtered idx_map and corresponding data_index values for those samples.
+        """
+        if start is None and end is None:
+            return idx_map, data_index
+        start_row_idx, end_row_idx = idx_df.index.slice_locs(start=start, end=end)
+        mask = (idx_map[:, 0] >= start_row_idx) & (idx_map[:, 0] < end_row_idx)
+        return idx_map[mask], data_index
+
+    @staticmethod
+    def idx_map2arr(idx_map: Dict[int, Tuple[int, int]]):
+        """
+        Convert dict {real_idx: (row, col)} to an array of shape [N, 2] sorted by real_idx ascending.
+        """
+        if len(idx_map) == 0:
+            return np.empty((0, 2), dtype=np.int32)
+        keys = np.array(sorted(idx_map.keys()), dtype=np.int64)
+        rows = np.fromiter((idx_map[k][0] for k in keys), dtype=np.int32, count=len(keys))
+        cols = np.fromiter((idx_map[k][1] for k in keys), dtype=np.int32, count=len(keys))
+        return np.stack([rows, cols], axis=1)
+
+    @staticmethod
+    def flt_idx_map(flt_data: pd.Series, idx_map: np.ndarray):
+        """
+        Filter samples using a boolean Series aligned to data.index (flat rows). Keep samples
+        whose corresponding real_idx is True. Since idx_map is built sorted by real_idx,
+        we can index by the same sorted order.
+        """
+        if flt_data is None:
+            return idx_map
+        flt_data = flt_data.astype(bool)
+        # positions where real_idx is kept
+        kept_pos = np.flatnonzero(flt_data.values)
+        if kept_pos.size == 0:
+            return np.empty((0, 2), dtype=np.int32)
+        # idx_map ordering follows sorted real_idx (0..N-1) — intersect
+        # For safety, compute mask by building a boolean array of size len(flt_data)
+        mask = np.zeros(len(flt_data), dtype=bool)
+        mask[kept_pos] = True
+        # real_idx sequence equals sorted keys; build that sequence length
+        # We assume data_index is original data.index; its positional order matches real_idx
+        real_idx_seq = np.arange(len(flt_data), dtype=np.int64)
+        sel = mask[real_idx_seq]
+        return idx_map[sel]
+
+    def config(self, **kwargs):
+        """
+        Update configuration. For TS-like sampler, changing fillna_type only affects how indices
+        are forward/backward filled in _get_indices; no need to rebuild data structures.
+        """
+        if "fillna_type" in kwargs:
+            self.fillna_type = kwargs["fillna_type"]
+        for k, v in kwargs.items():
+            if k != "fillna_type":
+                setattr(self, k, v)
 
     def __len__(self):
-        return len(self.idx_dates)
+        return len(self.idx_map)
 
-    def __getitem__(self, i: int):
-        dt = self.idx_dates[i]
-        start_pos = self.calendar.get_loc(dt)
-        w_start = self.calendar[start_pos - self.step_len + 1]
-        X_list = []
-        y_list = [] if self.label_cols is not None else None
-        index_list: List[Tuple[pd.Timestamp, str]] = []
-        for inst in self.instruments:
-            ts = self._per_inst.get(inst)
-            if ts is None:
-                continue
-            win_feat = ts.loc[w_start:dt, self.feature_cols]
-            if len(win_feat) != self.step_len:
-                continue
-            # if no filling allowed, ensure no NaN
-            if self.fillna_type == "none" and win_feat.isna().any().any():
-                continue
-            X_list.append(win_feat.values[np.newaxis, ...])  # [1, step_len, F]
-            index_list.append((dt, inst))
-            if y_list is not None:
-                win_y = ts.loc[w_start:dt, self.label_cols]
-                if self.fillna_type == "none" and win_y.isna().any().any():
-                    # if label missing, drop this instrument
-                    X_list.pop()
-                    index_list.pop()
-                    continue
-                y_list.append(win_y.values[np.newaxis, ...])  # [1, step_len, Y]
-        if len(X_list) == 0:
-            # In rare case, no instrument valid on this date; raise or return empty
-            n_y = 0 if self.label_cols is None else len(self.label_cols)
-            return {
-                "x": np.empty((0, self.step_len, len(self.feature_cols)), dtype=float),
-                "y": None if y_list is None else np.empty((0, self.step_len, n_y)),
-                "index": index_list,
-            }
-        X = np.concatenate(X_list, axis=0)
-        y = None if y_list is None else np.concatenate(y_list, axis=0)
-        return {"x": X, "y": y, "index": index_list}
+    def _get_indices(self, row: int, col: int) -> np.array:
+        """
+        Get flat indices of self.data_arr for the time window ending at (row, col) in idx_df.
+        """
+        indices = self.idx_arr[max(row - self.step_len + 1, 0) : row + 1, col]
+        if len(indices) < self.step_len:
+            indices = np.concatenate([np.full((self.step_len - len(indices),), np.nan), indices])
+
+        if self.fillna_type == "ffill":
+            indices = np_ffill(indices)
+        elif self.fillna_type == "ffill+bfill":
+            indices = np_ffill(np_ffill(indices)[::-1])[::-1]
+        else:
+            assert self.fillna_type == "none"
+        return indices
+
+    def _get_row_col(self, idx) -> Tuple[int]:
+        """
+        Resolve the (row, col) in idx_df for a given sample index, consistent with TSDataSampler.
+        idx can be an int (sample ordinal) or a tuple (date, instrument).
+        """
+        if isinstance(idx, (int, np.integer)):
+            real_idx = idx
+            if 0 <= real_idx < len(self.idx_map):
+                i, j = self.idx_map[real_idx]
+            else:
+                raise KeyError(f"{real_idx} is out of [0, {len(self.idx_map)})")
+        elif isinstance(idx, tuple):
+            date, inst = idx
+            date = pd.Timestamp(date)
+            # rows and cols are sorted
+            i = np.searchsorted(self.idx_df.index.values, date, side="right") - 1
+            j = np.searchsorted(self.idx_df.columns.values, inst, side="left")
+        else:
+            raise NotImplementedError("Unsupported index type")
+        return i, j
+
+    def __getitem__(self, idx: Union[int, Tuple[object, str], List[int]]):
+        mtit = (list, np.ndarray)
+        if isinstance(idx, mtit):
+            indices = [self._get_indices(*self._get_row_col(i)) for i in idx]
+            indices = np.concatenate(indices)
+        else:
+            indices = self._get_indices(*self._get_row_col(idx))
+
+        indices = np.nan_to_num(indices.astype(np.float64), nan=self.nan_idx).astype(int)
+
+        if (np.diff(indices) == 1).all():
+            data = self.data_arr[indices[0] : indices[-1] + 1]
+        else:
+            data = self.data_arr[indices]
+        if isinstance(idx, mtit):
+            data = data.reshape(-1, self.step_len, *data.shape[1:])
+        return data
 
     # Compatibility helpers
     def get_index(self) -> pd.MultiIndex:
@@ -152,7 +229,7 @@ class CSDataSampler:
         Align with TSDataSampler.get_index(): return MultiIndex in order <datetime, instrument>.
         Useful for external code that needs to know the index mapping.
         """
-        return self.data.index
+        return self.data_index
 
     @property
     def empty(self) -> bool:
@@ -162,8 +239,8 @@ class CSDataSampler:
 
 class CSDatasetH(DatasetH):
     """
-    DatasetH subclass that prepares cross-sectional samples via CSDataSampler.
-    Keeps the one-date-per-item behavior and <datetime, instrument> primary ordering.
+    DatasetH subclass for datetime-major TS-like sampling via CSDataSampler.
+    Keeps <datetime, instrument> primary ordering and TS-compatible sample semantics.
     """
 
     DEFAULT_STEP_LEN = 30
@@ -251,8 +328,88 @@ class CSDatasetH(DatasetH):
         # Delegate to DatasetH.prepare, which will call our _prepare_seg under the hood
         return super().prepare(segments=segments, col_set=col_set, data_key=data_key, **kwargs)
 
+class TSDatasetH(DatasetH):
+    """
+    (T)ime-(S)eries Dataset (H)andler
+
+
+    Convert the tabular data to Time-Series data
+
+    Requirements analysis
+
+    The typical workflow of a user to get time-series data for an sample
+    - process features
+    - slice proper data from data handler:  dimension of sample <feature, >
+    - Build relation of samples by <time, instrument> index
+        - Be able to sample times series of data <timestep, feature>
+        - It will be better if the interface is like "torch.utils.data.Dataset"
+    - User could build customized batch based on the data
+        - The dimension of a batch of data <batch_idx, feature, timestep>
+    """
+
+    DEFAULT_STEP_LEN = 30
+
+    def __init__(self, step_len=DEFAULT_STEP_LEN, **kwargs):
+        self.step_len = step_len
+        super().__init__(**kwargs)
+
+    def config(self, **kwargs):
+        if "step_len" in kwargs:
+            self.step_len = kwargs.pop("step_len")
+        super().config(**kwargs)
+
+    def setup_data(self, **kwargs):
+        super().setup_data(**kwargs)
+        # make sure the calendar is updated to latest when loading data from new config
+        cal = self.handler.fetch(col_set=self.handler.CS_RAW).index.get_level_values("datetime").unique()
+        self.cal = sorted(cal)
+
+    @staticmethod
+    def _extend_slice(slc: slice, cal: list, step_len: int) -> slice:
+        # Dataset decide how to slice data(Get more data for timeseries).
+        start, end = slc.start, slc.stop
+        start_idx = bisect.bisect_left(cal, pd.Timestamp(start))
+        pad_start_idx = max(0, start_idx - step_len)
+        pad_start = cal[pad_start_idx]
+        return slice(pad_start, end)
+
+    def _prepare_seg(self, slc: slice, **kwargs) -> CSDataSampler:
+        """
+        split the _prepare_raw_seg is to leave a hook for data preprocessing before creating processing data
+        NOTE: TSDatasetH only support slc segment on datetime !!!
+        """
+        dtype = kwargs.pop("dtype", None)
+        if not isinstance(slc, slice):
+            slc = slice(*slc)
+        start, end = slc.start, slc.stop
+        flt_col = kwargs.pop("flt_col", None)
+        # TSDatasetH will retrieve more data for complete time-series
+
+        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
+        data = super()._prepare_seg(ext_slice, **kwargs)
+
+        flt_kwargs = deepcopy(kwargs)
+        if flt_col is not None:
+            flt_kwargs["col_set"] = flt_col
+            flt_data = super()._prepare_seg(ext_slice, **flt_kwargs)
+            assert len(flt_data.columns) == 1
+        else:
+            flt_data = None
+
+        tsds = CSDataSampler(
+            data=data,
+            start=start,
+            end=end,
+            step_len=self.step_len,
+            dtype=dtype,
+            flt_data=flt_data,
+        )
+        return tsds
+
+
 
 __all__ = [
     "CSDataSampler",
     "CSDatasetH",
+    "TSDatasetH"
 ]

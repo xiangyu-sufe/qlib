@@ -73,7 +73,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
     
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
+    parser.add_argument("--start_time", type=str, default="2022-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2025-05-31", help="End time for data")
     # 模型参数
     parser.add_argument("--n_epochs", type=int, default=20, help="Number of epochs")
