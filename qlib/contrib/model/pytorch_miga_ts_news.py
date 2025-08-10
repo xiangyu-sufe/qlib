@@ -50,7 +50,7 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   )
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
     MIGAB1, MIGAB1VarLen, MIGAB2VarLenCrossAttn,
-    MIGAB3VarLenMoE
+    MIGAB3VarLenMoE, MIGAB4VarLenCrossAttnAvgMoE
 )
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
@@ -415,6 +415,22 @@ class MIGA(Model):
                 frozen=False,
                 model_path=None,
                 padding_method=self.padding_method,
+                n_heads=self.num_heads,
+                d_model=self.d_model,
+                num_experts=self.num_experts,
+                expert_type=self.expert_type,
+            )
+        elif version == "B4":
+            self.MIGA_model = MIGAB4VarLenCrossAttnAvgMoE(
+                price_dim=self.d_feat,
+                news_dim=1024,
+                hidden_dim=self.hidden_size,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+                frozen=False,
+                model_path=None,
+                padding_method=self.padding_method,
+                n_heads=self.num_heads,
                 d_model=self.d_model,
                 num_experts=self.num_experts,
                 expert_type=self.expert_type,
