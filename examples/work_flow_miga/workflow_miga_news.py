@@ -55,7 +55,7 @@ if __name__ == "__main__":
     parser.add_argument("--valid_length", type=int, default=240, help="Validation dataset length")
     parser.add_argument("--test_length", type=int, default=120, help="Test dataset length")
     # 时间范围参数
-    parser.add_argument("--start_time", type=str, default="2021-12-31", help="Start time for data")
+    parser.add_argument("--start_time", type=str, default="2022-12-31", help="Start time for data")
     parser.add_argument("--end_time", type=str, default="2025-05-31", help="End time for data")
     # 模型一般参数
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
@@ -68,6 +68,8 @@ if __name__ == "__main__":
     parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
     parser.add_argument("--hidden_dim", type=int, default=64, help="Hidden dimension for router (auto-calculated as num_groups * num_experts_per_group if not specified)")
     parser.add_argument("--d_model", type=int, default=64, help="Hidden dimension for cross attention")
+    parser.add_argument("--num_experts", type=int, default=4, help="Number of experts")
+    parser.add_argument("--expert_type", type=str, default="mlp", help="Expert type")
     parser.add_argument("--num_layers", type=int, default=2, help="Number of layers")
     parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate")
     parser.add_argument("--num_groups", type=int, default=4, help="Number of expert groups")

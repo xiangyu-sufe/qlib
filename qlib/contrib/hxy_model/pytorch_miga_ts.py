@@ -279,6 +279,9 @@ class MIGAB2(nn.Module):
         }
 
 
+
+
+
 class MIGAB2MoE(nn.Module):
     """
     B2-MoE: 在 MIGAB2 的基础上，将 cross-attn 后的新闻序列送入 MoE 专家集合。
@@ -452,7 +455,7 @@ class MIGAB1VarLen(nn.Module):
         frozen: bool = False,
         model_path: Optional[str] = None,
         padding_method: str = "zero",
-        min_news: int = -1,
+        min_news: int = 10,
     ):
         super().__init__()
         self.min_news = min_news
@@ -656,6 +659,9 @@ class MIGAB1VarLen(nn.Module):
             "routing_weights_flat": None,
         }
 
+
+
+
 class NewsPriceCrossAttn(nn.Module):
     """
     Cross-Attention: News as Query, Price as Key/Value.
@@ -750,13 +756,213 @@ class MIGAB2VarLenCrossAttn(MIGAB1VarLen):
             news_h = news_h[:, -1, :]
             news_out[~news_insufficient] = news_h
 
-        # 融合输出
-        price_news = torch.cat([price_out, news_out], dim=1)
-        price_news = self.ln(price_news)
-        out = self.fc_out(price_news).squeeze(-1)
+        # 融合输出（gate 融合，与父类保持一致）：
+        # 使用 (~news_insufficient).unsqueeze(1) 作为有效性的 mask，引导门控在无新闻时更依赖 price_out
+        out_hidden = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
+        out = self.fc_out(out_hidden).squeeze(-1)
 
         return {
             "predictions": out,
+            "routing_weights": None,
+            "hidden_representations": None,
+            "top_k_indices": None,
+            "routing_weights_flat": None,
+        }
+
+class MIGAB3VarLenMoE(MIGAB2VarLenCrossAttn):
+    """
+    B3-VarLen-MoE: 在 MIGAB2VarLenCrossAttn 基础上，将新闻分支替换为简单加权的 MoE 专家集合。
+
+    - 继承变长处理与 Cross-Attn(News<-Price) 逻辑；
+    - 使用全局可学习 logits 产生固定权重，对专家输出做加权和；
+    - 融合方式保持与父类一致（AddGateFusion + fc_out(hidden_dim->1)）。
+    """
+    def __init__(self,
+                 price_dim: int,
+                 news_dim: int,
+                 hidden_dim: int = 64,
+                 num_layers: int = 2,
+                 dropout: float = 0.0,
+                 frozen: bool = False,
+                 model_path: Optional[str] = None,
+                 padding_method: str = "zero",
+                 min_news: int = 10,
+                 n_heads: int = 4,
+                 d_model: Optional[int] = None,
+                 num_experts: int = 4,
+                 expert_type: str = 'gru'):
+        super().__init__(price_dim=price_dim,
+                         news_dim=news_dim,
+                         hidden_dim=hidden_dim,
+                         num_layers=num_layers,
+                         dropout=dropout,
+                         frozen=frozen,
+                         model_path=model_path,
+                         padding_method=padding_method,
+                         min_news=min_news,
+                         n_heads=n_heads,
+                         d_model=d_model)
+        assert expert_type in {'gru', 'mlp'}
+        self.num_experts = num_experts
+        self.expert_type = expert_type
+
+        input_dim = self.d_model  # cross_attn_np 输出维度
+        experts = []
+        
+        if expert_type == 'gru':
+            for _ in range(num_experts):
+                experts.append(nn.GRU(input_size=input_dim, hidden_size=hidden_dim, num_layers=1, batch_first=True, dropout=dropout))
+            self.experts = nn.ModuleList(experts)
+        elif expert_type == 'mlp':
+            self.gru_price = nn.GRU(input_size=price_dim, 
+                                   hidden_size=hidden_dim,
+                                   num_layers=num_layers, 
+                                   batch_first=True,
+                                   dropout=dropout)
+            for _ in range(num_experts):
+                experts.append(nn.Sequential(
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.Dropout(dropout),
+                    nn.LeakyReLU(),
+                    nn.Linear(hidden_dim, 1),
+                ))
+            self.experts = nn.ModuleList(experts)
+
+        self.gate_logits = nn.Parameter(torch.zeros(num_experts))
+        self.add_gate = AddGateFusion(hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, 1)
+
+    def forward(self,
+                price: torch.Tensor,
+                news: Union[List[torch.Tensor], torch.Tensor],
+                mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None):
+        N_price, T_price, _ = price.shape
+
+        # 变长准备与过滤（与父类一致）
+        news_tensor, mask_n = self._prepare_news_inputs(news, mask, price.device)
+        _, news_insufficient = self._compute_news_length_and_filter(mask_n, price.device)
+        self.update_count((~news_insufficient).sum().item(), N_price)
+
+        # price 分支
+        price_out, _ = self.gru_price(price)
+        price_out = price_out[:, -1, :]
+
+        # 新闻分支：Cross-Attn 后进入 MoE
+        news_out = torch.zeros((N_price, self.hidden_dim), device=price.device)
+        
+        if (~news_insufficient).any() and news_tensor.numel() > 0:
+            news_valid = news_tensor[~news_insufficient]        # [N_sub, Tn, D_news]
+            price_sub = price[~news_insufficient]               # [N_sub, Tp, D_price]
+            fused_seq = self.cross_attn_np(news_valid, price_sub)  # [N_sub, Tn, d_model]
+            news_out[~news_insufficient] = fused_seq[:, -1, :]
+            
+            expert_outputs = []  # [N_sub, H]
+            if self.expert_type == 'gru':
+                for gru in self.experts:  # type: ignore
+                    h, _ = gru(fused_seq)
+                    expert_outputs.append(h[:, -1, :])
+            elif self.expert_type == 'mlp':
+                # price GRU
+                price_news = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
+                # 使用 mask 做 mean-pool
+                for mlp in self.experts:  # type: ignore
+                    expert_outputs.append(mlp(price_news))
+
+            expert_stack = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]
+            expert_out = expert_stack.mean(dim=0)  # [N_sub, H]
+
+        # 融合与输出：保持与父类一致（AddGateFusion + FC）
+        out = expert_out.squeeze(-1)
+
+        return {
+            'predictions': out,
+            'routing_weights': None,
+            'hidden_representations': None,
+            'top_k_indices': None,
+            'routing_weights_flat': None,
+        }
+        
+class MIGAB4VarLenCrossAttnAvgMoE(MIGAB2VarLenCrossAttn):
+    """
+    在 MIGAB2VarLenCrossAttn 基础上实现一个最简单的 MoE：
+    - 维护 N 个独立的 MIGAB2VarLenCrossAttn 专家；
+    - 前向时分别计算每个专家的预测值，并对 N 个预测值做简单平均；
+    - 其它路由/门控等不引入，保持接口兼容，返回字典结构与父类一致。
+
+    用途：当你希望通过集成多个相同结构的子模型来提升稳健性，但不需要复杂的 gating/routing 逻辑时使用。
+    """
+
+    def __init__(
+        self,
+        price_dim: int,
+        news_dim: int,
+        hidden_dim: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.0,
+        frozen: bool = False,
+        model_path: Optional[str] = None,
+        padding_method: str = "zero",
+        min_news: int = 10,
+        n_heads: int = 4,
+        d_model: Optional[int] = None,
+        num_experts: int = 4,
+    ):
+        # 仍调用父类初始化，保证超参/属性一致；但前向时不直接用父类的子模块
+        super().__init__(
+            price_dim=price_dim,
+            news_dim=news_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            frozen=frozen,
+            model_path=model_path,
+            padding_method=padding_method,
+            min_news=min_news,
+            n_heads=n_heads,
+            d_model=d_model,
+        )
+
+        assert num_experts >= 1, "num_experts must be >= 1"
+        self.num_experts = num_experts
+
+        # 构建 N 个专家（完全相同结构、独立参数）
+        experts: List[MIGAB2VarLenCrossAttn] = []
+        for _ in range(num_experts):
+            experts.append(
+                MIGAB2VarLenCrossAttn(
+                    price_dim=price_dim,
+                    news_dim=news_dim,
+                    hidden_dim=hidden_dim,
+                    num_layers=num_layers,
+                    dropout=dropout,
+                    frozen=frozen,
+                    model_path=None,            # 子专家一般不从外部加载，避免权重覆盖
+                    padding_method=padding_method,
+                    min_news=min_news,
+                    n_heads=n_heads,
+                    d_model=d_model,
+                )
+            )
+        self.experts = nn.ModuleList(experts)
+
+    def forward(
+        self,
+        price: torch.Tensor,
+        news: Union[List[torch.Tensor], torch.Tensor],
+        mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
+    ):
+        # 针对每个专家分别前向，收集预测
+        preds = []
+        for expert in self.experts:  # type: ignore
+            out = expert(price=price, news=news, mask=mask)
+            preds.append(out["predictions"])  # [N]
+
+        # 形状对齐与平均
+        expert_stack = torch.stack(preds, dim=0)  # [E, N]
+        avg_pred = expert_stack.mean(dim=0)       # [N]
+
+        return {
+            "predictions": avg_pred,
             "routing_weights": None,
             "hidden_representations": None,
             "top_k_indices": None,
