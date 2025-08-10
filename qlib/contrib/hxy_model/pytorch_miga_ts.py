@@ -279,92 +279,7 @@ class MIGAB2(nn.Module):
         }
 
 
-class MIGAB4VarLenCrossAttnAvgMoE(MIGAB2VarLenCrossAttn):
-    """
-    在 MIGAB2VarLenCrossAttn 基础上实现一个最简单的 MoE：
-    - 维护 N 个独立的 MIGAB2VarLenCrossAttn 专家；
-    - 前向时分别计算每个专家的预测值，并对 N 个预测值做简单平均；
-    - 其它路由/门控等不引入，保持接口兼容，返回字典结构与父类一致。
 
-    用途：当你希望通过集成多个相同结构的子模型来提升稳健性，但不需要复杂的 gating/routing 逻辑时使用。
-    """
-
-    def __init__(
-        self,
-        price_dim: int,
-        news_dim: int,
-        hidden_dim: int = 64,
-        num_layers: int = 2,
-        dropout: float = 0.0,
-        frozen: bool = False,
-        model_path: Optional[str] = None,
-        padding_method: str = "zero",
-        min_news: int = 10,
-        n_heads: int = 4,
-        d_model: Optional[int] = None,
-        num_experts: int = 4,
-    ):
-        # 仍调用父类初始化，保证超参/属性一致；但前向时不直接用父类的子模块
-        super().__init__(
-            price_dim=price_dim,
-            news_dim=news_dim,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-            frozen=frozen,
-            model_path=model_path,
-            padding_method=padding_method,
-            min_news=min_news,
-            n_heads=n_heads,
-            d_model=d_model,
-        )
-
-        assert num_experts >= 1, "num_experts must be >= 1"
-        self.num_experts = num_experts
-
-        # 构建 N 个专家（完全相同结构、独立参数）
-        experts: List[MIGAB2VarLenCrossAttn] = []
-        for _ in range(num_experts):
-            experts.append(
-                MIGAB2VarLenCrossAttn(
-                    price_dim=price_dim,
-                    news_dim=news_dim,
-                    hidden_dim=hidden_dim,
-                    num_layers=num_layers,
-                    dropout=dropout,
-                    frozen=frozen,
-                    model_path=None,            # 子专家一般不从外部加载，避免权重覆盖
-                    padding_method=padding_method,
-                    min_news=min_news,
-                    n_heads=n_heads,
-                    d_model=d_model,
-                )
-            )
-        self.experts = nn.ModuleList(experts)
-
-    def forward(
-        self,
-        price: torch.Tensor,
-        news: Union[List[torch.Tensor], torch.Tensor],
-        mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
-    ):
-        # 针对每个专家分别前向，收集预测
-        preds = []
-        for expert in self.experts:  # type: ignore
-            out = expert(price=price, news=news, mask=mask)
-            preds.append(out["predictions"])  # [N]
-
-        # 形状对齐与平均
-        expert_stack = torch.stack(preds, dim=0)  # [E, N]
-        avg_pred = expert_stack.mean(dim=0)       # [N]
-
-        return {
-            "predictions": avg_pred,
-            "routing_weights": None,
-            "hidden_representations": None,
-            "top_k_indices": None,
-            "routing_weights_flat": None,
-        }
 
 
 class MIGAB2MoE(nn.Module):
@@ -965,4 +880,91 @@ class MIGAB3VarLenMoE(MIGAB2VarLenCrossAttn):
             'hidden_representations': None,
             'top_k_indices': None,
             'routing_weights_flat': None,
+        }
+        
+class MIGAB4VarLenCrossAttnAvgMoE(MIGAB2VarLenCrossAttn):
+    """
+    在 MIGAB2VarLenCrossAttn 基础上实现一个最简单的 MoE：
+    - 维护 N 个独立的 MIGAB2VarLenCrossAttn 专家；
+    - 前向时分别计算每个专家的预测值，并对 N 个预测值做简单平均；
+    - 其它路由/门控等不引入，保持接口兼容，返回字典结构与父类一致。
+
+    用途：当你希望通过集成多个相同结构的子模型来提升稳健性，但不需要复杂的 gating/routing 逻辑时使用。
+    """
+
+    def __init__(
+        self,
+        price_dim: int,
+        news_dim: int,
+        hidden_dim: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.0,
+        frozen: bool = False,
+        model_path: Optional[str] = None,
+        padding_method: str = "zero",
+        min_news: int = 10,
+        n_heads: int = 4,
+        d_model: Optional[int] = None,
+        num_experts: int = 4,
+    ):
+        # 仍调用父类初始化，保证超参/属性一致；但前向时不直接用父类的子模块
+        super().__init__(
+            price_dim=price_dim,
+            news_dim=news_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            frozen=frozen,
+            model_path=model_path,
+            padding_method=padding_method,
+            min_news=min_news,
+            n_heads=n_heads,
+            d_model=d_model,
+        )
+
+        assert num_experts >= 1, "num_experts must be >= 1"
+        self.num_experts = num_experts
+
+        # 构建 N 个专家（完全相同结构、独立参数）
+        experts: List[MIGAB2VarLenCrossAttn] = []
+        for _ in range(num_experts):
+            experts.append(
+                MIGAB2VarLenCrossAttn(
+                    price_dim=price_dim,
+                    news_dim=news_dim,
+                    hidden_dim=hidden_dim,
+                    num_layers=num_layers,
+                    dropout=dropout,
+                    frozen=frozen,
+                    model_path=None,            # 子专家一般不从外部加载，避免权重覆盖
+                    padding_method=padding_method,
+                    min_news=min_news,
+                    n_heads=n_heads,
+                    d_model=d_model,
+                )
+            )
+        self.experts = nn.ModuleList(experts)
+
+    def forward(
+        self,
+        price: torch.Tensor,
+        news: Union[List[torch.Tensor], torch.Tensor],
+        mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
+    ):
+        # 针对每个专家分别前向，收集预测
+        preds = []
+        for expert in self.experts:  # type: ignore
+            out = expert(price=price, news=news, mask=mask)
+            preds.append(out["predictions"])  # [N]
+
+        # 形状对齐与平均
+        expert_stack = torch.stack(preds, dim=0)  # [E, N]
+        avg_pred = expert_stack.mean(dim=0)       # [N]
+
+        return {
+            "predictions": avg_pred,
+            "routing_weights": None,
+            "hidden_representations": None,
+            "top_k_indices": None,
+            "routing_weights_flat": None,
         }
