@@ -452,7 +452,7 @@ class MIGAB1VarLen(nn.Module):
         frozen: bool = False,
         model_path: Optional[str] = None,
         padding_method: str = "zero",
-        min_news: int = 10,
+        min_news: int = -1,
     ):
         super().__init__()
         self.min_news = min_news
@@ -485,7 +485,7 @@ class MIGAB1VarLen(nn.Module):
             self.gru_price.load_state_dict(torch.load(model_path, map_location="cpu"))
 
         self.ln = nn.LayerNorm(hidden_dim * 2)
-        self.fc_out = nn.Linear(hidden_dim * 2, 1)
+        self.fc_out = nn.Linear(hidden_dim, 1)
         self.add_gate = AddGateFusion(hidden_dim)
 
     def reset_count(self):
@@ -644,9 +644,9 @@ class MIGAB1VarLen(nn.Module):
             news_h = news_h[:, -1, :]
             news_out[~news_insufficient] = news_h
 
-        price_news = torch.cat([price_out, news_out], dim=1)
+        out = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
         # price_news = self.ln(price_news)
-        out = self.fc_out(price_news).squeeze(-1)
+        out = self.fc_out(out).squeeze(-1)
 
         return {
             "predictions": out,
