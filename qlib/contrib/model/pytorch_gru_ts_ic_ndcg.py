@@ -246,7 +246,7 @@ class GRUNDCG(Model):
             optimizer=self.train_optimizer,
             mode='max',
             factor = 0.2,
-            patience = 5, 
+            patience = 3, 
             min_lr = 1e-5           # 学习率下限
         )
         self.fitted = False
@@ -320,6 +320,7 @@ class GRUNDCG(Model):
             feature = data[:, :, 0:self.d_feat].to(self.device)
             label = data[:, -1, self.d_feat].to(self.device)
             if self.ohlc:
+                # 这里是分钟数据没有归一化
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
                 if self.minute:
@@ -327,9 +328,14 @@ class GRUNDCG(Model):
                 else:
                     feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
-                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_batchnorm(feature) 
                 feature = process_ohlc_inf_nan_fill0_cuda(feature)
-                # 或者 对 volume winsor 后  minmax 归一化 + ffill + bfill
+            #     # 或者 对 volume winsor 后  minmax 归一化 + ffill + bfill
+            # if self.ohlc:
+            #     feature = process_ohlc_cuda(feature)
+            #     feature[:, :, :6] = process_ohlc_batchwinsor(feature[:, :, :6])
+            #     feature[:, :, :6] = process_ohlc_batchnorm(feature[:, :, :6])
+            #     feature = process_ohlc_inf_nan_fill0_cuda(feature)
             pred = self.GRU_model(feature.float())
             # 这里使用NDCG @k来计算损失
             pred.requires_grad_(True)
@@ -439,12 +445,18 @@ class GRUNDCG(Model):
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, self.d_feat].to(self.device)
             if self.ohlc:
-                # 使用 ohlc 数据
-                # 先时序归一化+ winsor + batchnorm + fill0
-                feature = process_ohlc_cuda(feature)
+                if self.minute:
+                    feature = process_minute_cuda(feature)
+                else:
+                    feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
-                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_batchnorm(feature) 
                 feature = process_ohlc_inf_nan_fill0_cuda(feature)
+            # if self.ohlc:
+            #     feature = process_ohlc_cuda(feature)
+            #     feature[:, :, :6] = process_ohlc_batchwinsor(feature[:, :, :6])
+            #     feature[:, :, :6] = process_ohlc_batchnorm(feature[:, :, :6])
+            #     feature = process_ohlc_inf_nan_fill0_cuda(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float())
                 # 计算RankNet交叉熵损失（仅用于观察）
@@ -581,10 +593,18 @@ class GRUNDCG(Model):
             data.squeeze_(0) # 去除横截面 dim
             feature = data[:, :, :self.d_feat].to(self.device)
             if self.ohlc:
-                feature = process_ohlc_cuda(feature)
+                if self.minute:
+                    feature = process_minute_cuda(feature)
+                else:
+                    feature = process_ohlc_cuda(feature)
                 feature = process_ohlc_batchwinsor(feature)
-                feature = process_ohlc_batchnorm(feature)
+                feature = process_ohlc_batchnorm(feature) 
                 feature = process_ohlc_inf_nan_fill0_cuda(feature)
+            # if self.ohlc:
+            #     feature = process_ohlc_cuda(feature)
+            #     feature[:, :, :6] = process_ohlc_batchwinsor(feature[:, :, :6])
+            #     feature[:, :, :6] = process_ohlc_batchnorm(feature[:, :, :6])
+            #     feature = process_ohlc_inf_nan_fill0_cuda(feature)
             with torch.no_grad():
                 pred = self.GRU_model(feature.float()).detach().cpu().numpy()
 

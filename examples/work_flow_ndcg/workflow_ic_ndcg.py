@@ -18,6 +18,7 @@ from qlib.utils.hxy_utils import (get_label,
                                   read_alpha64, 
                                   read_ohlc,
                                   read_minute,
+                                  read_minute1,
                                   read_label,
                                   custom_serializer,
                                   is_month_end_trade_day)
@@ -112,7 +113,8 @@ if __name__ == "__main__":
             a = time.time()
             ohlc = read_ohlc()
             if args.minute:
-                minute = read_minute()
+                minute = read_minute1(processed=True)
+                print("使用过滤后的分钟数据集")
             labels = read_label(day=10, method = 'win+neu+zscore')
             data = ohlc.join(minute, how='left').join(labels, how='left')
             data.columns = pd.MultiIndex.from_tuples(

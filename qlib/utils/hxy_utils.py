@@ -431,16 +431,37 @@ def read_ohlc():
     
     return df
     
-def read_minute():
+def read_minute(processed=True):
     # 读取自有alpha64 数据
     root_dir = os.path.expanduser('~')
-    df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_raw.pkl')
+    if processed:
+        df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_filtered.pkl')
+    else:
+        df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_raw.pkl')
     df.columns = df.columns.str.replace(r'\..*$', '', regex=True)
     # 处理股票代码
     df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
     df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)    
     
     return df
+
+def read_minute1(processed):
+    """
+    # 这个读取的是简单过滤后的
+    # 人为判断逻辑重叠
+    # 后还剩 40 个特征 其中价格特征 5 个 绝对特征 10 个
+    # """
+    root_dir = os.path.expanduser('~')
+    if processed:
+        df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_filtered1.pkl')
+    else:
+        df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_raw.pkl')
+    df.columns = df.columns.str.replace(r'\..*$', '', regex=True)
+    # 处理股票代码
+    df.index = df.index.set_levels(df.index.levels[1].map(convert_stock_code_to_qlib_format), level=1)
+    df.index = df.index.set_levels(pd.to_datetime(df.index.levels[0].astype(str)), level=0)    
+    
+    return df    
 
 # ==================== 处理新闻新增
 
