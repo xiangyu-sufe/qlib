@@ -376,15 +376,15 @@ class GRUNDCG(Model):
             pred.backward(lambda_grads)                
             torch.nn.utils.clip_grad_norm_(self.GRU_model.parameters(), 3.0) 
             # 手动更新梯度
-            # self.logger.debug(f"\n 手动更新梯度")
-            # with torch.no_grad():
-            #     lr = self.train_optimizer.param_groups[0]['lr']
-            #     for p in self.GRU_model.parameters():
-            #         if p.grad is not None:
-            #             p.data -= lr * p.grad
+            self.logger.debug(f"\n 手动更新梯度")
+            with torch.no_grad():
+                lr = self.train_optimizer.param_groups[0]['lr']
+                for p in self.GRU_model.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
             # 优化器更新梯度
             # self.logger.debug(f"\n 优化器{self.optimizer}更新梯度")
-            self.train_optimizer.step()
+            # self.train_optimizer.step()
             # 更新完后记录下梯度
             if self.debug:
                 grad_norm = compute_grad_norm(self.GRU_model)
