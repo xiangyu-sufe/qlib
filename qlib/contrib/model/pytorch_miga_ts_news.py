@@ -49,7 +49,7 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   VarLenIndexedSeqDataset
                                   )
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
-    MIGAB1, MIGAB1VarLen
+    MIGAB1, MIGAB1VarLen, MIGAB2VarLenCrossAttn
 )
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
@@ -126,7 +126,8 @@ class MIGA(Model):
         hidden_size=64,
         num_groups: int = 4,
         num_experts_per_group: int = 4,
-        num_heads: int = 8,
+        num_heads: int = 4, # 头数
+        d_model: int = 64, # attention 的维度
         top_k: int = 2,
         expert_output_dim: int = 1,
         num_layers=2,
@@ -175,6 +176,7 @@ class MIGA(Model):
         # set hyper-parameters.
         self.d_feat = d_feat
         self.hidden_size = hidden_size
+        self.d_model = d_model
         self.num_groups = num_groups
         self.num_experts_per_group = num_experts_per_group
         self.num_heads = num_heads
@@ -236,6 +238,7 @@ class MIGA(Model):
             "MIGA parameters setting:"
             "\nd_feat : {}"
             "\nhidden_size : {}"
+            "\nd_model : {}"
             "\nnum_groups : {}"
             "\nnum_experts_per_group : {}"
             "\nnum_heads : {}"
@@ -265,6 +268,7 @@ class MIGA(Model):
             "\nsave_path : {}".format(
                 self.d_feat,
                 self.hidden_size,
+                self.d_model,
                 self.num_groups,
                 self.num_experts_per_group,
                 self.num_heads,
@@ -382,6 +386,19 @@ class MIGA(Model):
                 frozen=False,
                 model_path=None,
                 padding_method=self.padding_method,
+                )
+        elif version == "B2":
+            self.MIGA_model = MIGAB2VarLenCrossAttn(
+                price_dim=self.d_feat,
+                news_dim=1024,
+                hidden_dim=self.hidden_size,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+                frozen=False,
+                model_path=None,
+                padding_method=self.padding_method,        
+                n_heads = self.num_heads,
+                d_model = self.d_model,
             )
         
 
