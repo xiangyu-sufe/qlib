@@ -68,6 +68,8 @@ if __name__ == "__main__":
     parser.add_argument("--d_feat", type=int, default=158, help="Feature dimension")
     parser.add_argument("--hidden_dim", type=int, default=64, help="Hidden dimension for router (auto-calculated as num_groups * num_experts_per_group if not specified)")
     parser.add_argument("--d_model", type=int, default=64, help="Hidden dimension for cross attention")
+    parser.add_argument("--num_experts", type=int, default=4, help="Number of experts")
+    parser.add_argument("--expert_type", type=str, default="mlp", help="Expert type")
     parser.add_argument("--num_layers", type=int, default=2, help="Number of layers")
     parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate")
     parser.add_argument("--num_groups", type=int, default=4, help="Number of expert groups")

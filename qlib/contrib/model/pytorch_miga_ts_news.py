@@ -49,7 +49,8 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   VarLenIndexedSeqDataset
                                   )
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
-    MIGAB1, MIGAB1VarLen, MIGAB2VarLenCrossAttn
+    MIGAB1, MIGAB1VarLen, MIGAB2VarLenCrossAttn,
+    MIGAB3VarLenMoE
 )
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
@@ -125,6 +126,8 @@ class MIGA(Model):
         d_feat=6, # 模型参数
         hidden_size=64,
         num_groups: int = 4,
+        num_experts: int = 4,   
+        expert_type: str = "mlp",
         num_experts_per_group: int = 4,
         num_heads: int = 4, # 头数
         d_model: int = 64, # attention 的维度
@@ -178,6 +181,8 @@ class MIGA(Model):
         self.hidden_size = hidden_size
         self.d_model = d_model
         self.num_groups = num_groups
+        self.num_experts = num_experts
+        self.expert_type = expert_type
         self.num_experts_per_group = num_experts_per_group
         self.num_heads = num_heads
         self.top_k = top_k
@@ -399,6 +404,20 @@ class MIGA(Model):
                 padding_method=self.padding_method,        
                 n_heads = self.num_heads,
                 d_model = self.d_model,
+            )
+        elif version == "B3":
+            self.MIGA_model = MIGAB3VarLenMoE(
+                price_dim=self.d_feat,
+                news_dim=1024,
+                hidden_dim=self.hidden_size,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+                frozen=False,
+                model_path=None,
+                padding_method=self.padding_method,
+                d_model=self.d_model,
+                num_experts=self.num_experts,
+                expert_type=self.expert_type,
             )
         
 
