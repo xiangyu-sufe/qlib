@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.data import BatchSampler
+from torch.utils.data import BatchSampler, Sampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from .pytorch_utils import count_parameters
@@ -50,39 +50,23 @@ import sys
 
 init(autoreset=True)
 
-class DailyBatchSampler(BatchSampler):
-    """
-    Yield all rows of the same trading day as one batch,
-    independent of the index sort order.
-    """
+class DailyBatchSampler(Sampler):
     def __init__(self, data_source):
         self.data_source = data_source
-        # 把 datetime -> 行号数组 建立映射
-        original_index = self.data_source.get_index()
-        dts = original_index.get_level_values("datetime")
-        self.groups = defaultdict(list)
-        for pos, dt in enumerate(dts):
-            self.groups[dt].append(pos)
-        # 交易日按时间排序，保证训练顺序一致
-        self.order = sorted(self.groups.keys())
+        # calculate number of samples per day and the start index of each day (contiguous by datetime)
+        self.daily_count = (
+            pd.Series(index=self.data_source.get_index()).groupby("datetime", group_keys=False).size().values
+        )
+        self.daily_index = np.roll(np.cumsum(self.daily_count), 1)  # begin index of each batch
+        self.daily_index[0] = 0
 
-        # 按训练顺序把行号拼成一个完整的新索引顺序
-        new_pos_list = []
-        for dt in self.order:
-            new_pos_list.extend(self.groups[dt])
-        # 根据行号列表重新排序原 MultiIndex
-        self.new_index = original_index[new_pos_list]
-
-    @property
-    def reordered_index(self):
-        return self.new_index
-        
     def __iter__(self):
-        for dt in self.order:
-            yield np.array(self.groups[dt])
+        for idx, count in zip(self.daily_index, self.daily_count):
+            yield np.arange(idx, idx + count)
 
     def __len__(self):
-        return len(self.order)
+        # number of batches (trading days)
+        return len(self.daily_index)
 
 
 class GRUNDCG(Model):
@@ -311,23 +295,23 @@ class GRUNDCG(Model):
             epoch_grad_norms = []
             epoch_grad_norms_layer = []
 
-        for i, (data, weight) in enumerate(data_loader):
+        for i, data in tqdm(enumerate(data_loader)):
             if i <= self.step_len:
                 # warm up
                 continue
                 
             data.squeeze_(0) # 去除横截面 dim
-            feature = data[:, :, 0:self.d_feat].to(self.device)
-            label = data[:, -1, self.d_feat].to(self.device)
+            feature = data[:, :, 0:self.d_feat].to(self.device, non_blocking=True)
+            label = data[:, -1, self.d_feat].to(self.device, non_blocking=True)
             if self.ohlc:
                 # 使用 ohlc 数据
                 # 先时序归一化+ winsor + batchnorm + fill0
-                if self.minute:
-                    feature = process_minute_cuda(feature)
-                else:
-                    feature = process_ohlc_cuda(feature)
-                feature = process_ohlc_batchwinsor(feature)
-                feature = process_ohlc_batchnorm(feature)
+                # if self.minute:
+                #     feature = process_minute_cuda(feature)
+                # else:
+                #     feature = process_ohlc_cuda(feature)
+                # feature = process_ohlc_batchwinsor(feature)
+                # feature = process_ohlc_batchnorm(feature)
                 feature = process_ohlc_inf_nan_fill0_cuda(feature)
                 # 或者 对 volume winsor 后  minmax 归一化 + ffill + bfill
             pred = self.GRU_model(feature.float())
@@ -479,14 +463,15 @@ class GRUNDCG(Model):
 
         train_loader = DataLoader(
             dl_train,
-            batch_size=1,
-            collate_fn=lambda b: b[0],
+            batch_size = 5000,
+            # batch_sampler=DailyBatchSampler(dl_train),
             num_workers=self.n_jobs,
+            pin_memory=True,
+            prefetch_factor=None,
         )
         valid_loader = DataLoader(
             dl_valid,
-            batch_size=1,
-            collate_fn=lambda b: b[0],
+            batch_sampler=DailyBatchSampler(dl_valid),
             num_workers=self.n_jobs,
         )
 
