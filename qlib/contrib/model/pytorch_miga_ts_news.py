@@ -7,6 +7,7 @@ from __future__ import print_function
 from collections import defaultdict
 import warnings
 from typing import Dict, List, Tuple, Optional, DefaultDict, Union
+import gc
 
 import sys
 import logging
@@ -48,9 +49,11 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   process_ohlc_inf_nan_fill0_cuda, visualize_evals_result_general,
                                   VarLenIndexedSeqDataset
                                   )
+from qlib.utils.timing import timing
 from qlib.contrib.hxy_model.pytorch_miga_ts import (
     MIGAB1, MIGAB1VarLen, MIGAB2VarLenCrossAttn,
-    MIGAB3VarLenMoE, MIGAB4VarLenCrossAttnAvgMoE
+    MIGAB3VarLenMoE, MIGAB4VarLenCrossAttnAvgMoE,
+    MIGAB5VarLenMoEGateTop
 )
 from colorama import Fore, Style, init
 import matplotlib.pyplot as plt
@@ -127,6 +130,7 @@ class MIGA(Model):
         hidden_size=64,
         num_groups: int = 4,
         num_experts: int = 4,   
+        topk: int = 4,
         expert_type: str = "mlp",
         num_experts_per_group: int = 4,
         num_heads: int = 4, # 头数
@@ -244,6 +248,7 @@ class MIGA(Model):
             "\nd_feat : {}"
             "\nhidden_size : {}"
             "\nd_model : {}"
+            "\nnum_experts : {}"
             "\nnum_groups : {}"
             "\nnum_experts_per_group : {}"
             "\nnum_heads : {}"
@@ -274,6 +279,7 @@ class MIGA(Model):
                 self.d_feat,
                 self.hidden_size,
                 self.d_model,
+                self.num_experts,
                 self.num_groups,
                 self.num_experts_per_group,
                 self.num_heads,
@@ -448,6 +454,7 @@ class MIGA(Model):
                 d_model=self.d_model,
                 num_experts=self.num_experts,
                 expert_type=self.expert_type,
+                topk=self.top_k,
             )
         else:
             raise ValueError("...")
@@ -498,7 +505,7 @@ class MIGA(Model):
 
         raise ValueError("unknown metric `%s`" % name)
         
-
+    @timing
     def train_epoch(self, data_loader):
         import time
         
@@ -616,7 +623,7 @@ class MIGA(Model):
         # print(f"epoch {i} wall-time: {time.time()-start:.2f}s")
         return result_agg
     
-
+    @timing
     def test_epoch(self, data_loader):
         self.MIGA_model.eval()
         result = defaultdict(list)
@@ -802,6 +809,10 @@ class MIGA(Model):
                                        self.val_index,
                                        save_path, 
                                        self.logger)
+        self.logger.info("回收train loader, valid loader...")
+        self.train_loader = None 
+        self.valid_loader = None
+        gc.collect()
 
     
     

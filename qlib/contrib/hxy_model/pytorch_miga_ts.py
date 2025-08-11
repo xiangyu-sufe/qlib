@@ -4,6 +4,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
+
 
 class AddGateFusion(nn.Module):
     def __init__(self, feat_dim):
@@ -279,10 +281,6 @@ class MIGAB2(nn.Module):
         }
 
 
-<<<<<<< HEAD
-=======
-
->>>>>>> adadd10363e3a0c16751743286a87dc8e1aa182d
 
 
 class MIGAB2MoE(nn.Module):
@@ -1011,7 +1009,8 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                          n_heads=n_heads,
                          d_model=d_model,
                          num_experts=num_experts,
-                         expert_type=expert_type)
+                         expert_type=expert_type,
+                         )
 
         assert 1 <= topk <= num_experts, "topk must be in [1, num_experts]"
         self.topk = topk
@@ -1092,7 +1091,7 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         if (~news_insufficient).any() and fused_seq is not None:
             expert_outputs = []
             if self.expert_type == 'gru':
-                for gru in self.experts:  # type: ignore
+                for gru in self.experts:  
                     h, _ = gru(price)
                     expert_outputs.append(h[:, -1, :])             # [N_sub, H]
                 expert_out_full = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]
@@ -1100,16 +1099,15 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                 # 对于 MLP 专家，使用 fused_seq 的最后一步特征作为输入，维度为 d_model
                 expert_outputs = [mlp(out_hidden) for mlp in self.experts]  # type: ignore
                 expert_out_full = torch.stack(expert_outputs, dim=0)     # [E, N_sub, 1]
-
+                
+        expert_out = self.fc_out(expert_out_full).squeeze()
         # 根据 topk probs 对 expert_out_full 做加权
-        topk_probs_expanded = topk_probs.unsqueeze(-1).expand(-1, -1, expert_out_full.shape[-1])
-        expert_out_weighted = (expert_out_full * topk_probs_expanded).sum(dim=0)  # [N_sub, H]
+        topk_probs = topk_probs.transpose(0, 1)
+        expert_out_weighted = (expert_out * topk_probs).sum(dim=0)  # [N_sub, H]
 
         return {
             'predictions': expert_out_weighted,
-            'routing_weights': topk_probs,
+            'routing_weights': usage,
             'hidden_representations': None,
-            'top_k_indices': top_k_indices,
-            'routing_weights_flat': routing_weights_flat,
         }
 

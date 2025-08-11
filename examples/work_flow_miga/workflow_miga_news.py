@@ -44,7 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--onlyrun_task_id", type=int, nargs="+", default=None, help="Only run task id")
     parser.add_argument("--onlyrun_seed_id", type=int, default=0, help="Only run specified seed id")
     parser.add_argument("--pv1pv5", type=int, default=1, help="PV1 or PV5 day setting")
-    parser.add_argument("--step_len", type=int, default=20, help="Step length")
+    parser.add_argument("--step_len", type=int, default=30, help="Step length")
     parser.add_argument("-v", "--version", type=int, default=1, help="Version of the model")
     parser.add_argument("--ohlc", action="store_true",  help="Use ohlc data")
     parser.add_argument("--n_jobs", type=int, default=0, help="Number of jobs for parallel processing")
@@ -239,8 +239,10 @@ if __name__ == "__main__":
                     "hidden_size": args.hidden_dim,
                     "num_groups": args.num_groups,
                     "num_experts_per_group": args.num_experts_per_group,
+                    "num_experts": args.num_experts,
+                    "expert_type": args.expert_type,
                     "num_heads": args.num_heads,
-                    "top_k": args.top_k,
+                    "topk": args.top_k,
                     "expert_output_dim": 1,
                     "num_layers": args.num_layers,
                     "dropout": args.dropout,
