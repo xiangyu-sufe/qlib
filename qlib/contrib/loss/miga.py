@@ -61,13 +61,19 @@ class MIGALoss(nn.Module):
         distance = torch.mean((hidden_representations - mean_hidden) ** 2)
         return distance
         
+    def router_balance_loss_2(self, prob: torch.Tensor)->torch.Tensor:
+        """
+        Calculate router balance loss to prevent routing collapse
+        """
+        return torch.sum(prob ** 2) * len(prob)    
+        
     def forward(self, predictions: torch.Tensor, targets: torch.Tensor, 
-                hidden_representations: torch.Tensor) -> Dict[str, torch.Tensor]:
+                prob: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
         Calculate combined MIGA loss
         """
         expert_loss = self.information_coefficient_loss(predictions, targets)
-        router_loss = self.router_balance_loss(hidden_representations)
+        router_loss = self.router_balance_loss_2(prob)
         
         total_loss = self.omega * router_loss + self.epsilon * expert_loss
         

@@ -558,10 +558,9 @@ class MIGA(Model):
                 output = self.MIGA_model(feature)
             
             pred = output['predictions']
-            hidden_representations = output['hidden_representations']
+            routing_weights = output['routing_weights']
             if self.loss == "miga":
-                loss_dict = self.loss_fn(pred, label, hidden_representations,)
-    
+                loss_dict = self.loss_fn(pred, label, routing_weights)
             else:
                 loss_dict = self.loss_fn(pred, label)
             if isinstance(loss_dict, dict):
@@ -653,7 +652,7 @@ class MIGA(Model):
                 else:
                     output = self.MIGA_model(feature.float())
                 pred = output['predictions']
-                hidden_representations = output['hidden_representations']
+                # routing_weights = output['routing_weights']
 
                 total_len += len(data)
                 count += 1
