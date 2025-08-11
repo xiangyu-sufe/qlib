@@ -368,7 +368,7 @@ class GRUNDCG(Model):
                     lambda_grads = scale_preserve_sign_torch(lambda_grads)
                     grad = scale_preserve_sign_torch(grad)
                     lambda_grads = (1-self.weight) * lambda_grads + grad * self.weight
-                    lambda_grads = lambda_grads / lambda_grads.norm(2) * grad_norm # 保证梯度范数一致
+                    # lambda_grads = lambda_grads / lambda_grads.norm(2) * grad_norm # 保证梯度范数一致
                 else:
                     raise ValueError(f"Unknown combine_type: {self.combine_type}")
             else:

@@ -433,7 +433,6 @@ class MIGA(Model):
                 n_heads=self.num_heads,
                 d_model=self.d_model,
                 num_experts=self.num_experts,
-                expert_type=self.expert_type,
             )
         
 
