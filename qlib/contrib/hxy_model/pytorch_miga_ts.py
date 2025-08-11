@@ -970,8 +970,4 @@ class MIGAB4VarLenCrossAttnAvgMoE(MIGAB2VarLenCrossAttn):
             "hidden_representations": None,
             "top_k_indices": None,
             "routing_weights_flat": None,
-<<<<<<< HEAD
         }
-=======
-        }
->>>>>>> adadd10363e3a0c16751743286a87dc8e1aa182d
