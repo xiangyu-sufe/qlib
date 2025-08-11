@@ -223,6 +223,7 @@ class MIGA(Model):
 
         if  self.loss == "miga":
             self.Miga_loss = MIGALoss(omega=self.omega, epsilon=self.epsilon)
+            self.display_list += ['router_loss', ]
             # 定义omega_scheduler
             if self.omega_scheduler == "exp":
                 def omega_scheduler_func(epoch):
@@ -479,7 +480,7 @@ class MIGA(Model):
     def metric_fn(self, pred, label, name, hidden=None, topk=None):
         mask = torch.isfinite(label)
 
-        if name in ("", "loss", "ic", "rankic", "ndcg", "topk_return"):
+        if name in ("", "loss", "ic", "rankic", "ndcg", "topk_return", "router_loss"):
             if name == "ic":
                 return -ic_loss(pred[mask], label[mask]).item()
             elif name == "rankic":
@@ -501,7 +502,14 @@ class MIGA(Model):
                         return -loss.item()
                     else:
                         raise ValueError(f"Loss {self.loss} but expect a torch.Tensor")
-
+            elif name == "router_loss":
+                assert self.loss == "miga"
+                loss_dict = self.loss_fn(pred[mask], label[mask], hidden=hidden)
+                if isinstance(loss_dict, dict):
+                    return -loss_dict['router_loss'].item()
+                else:
+                    raise ValueError("MIGA Loss return a torch.Tensor, but expect a dict")
+                
         raise ValueError("unknown metric `%s`" % name)
         
     @timing
