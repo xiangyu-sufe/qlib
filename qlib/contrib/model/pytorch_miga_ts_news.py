@@ -590,7 +590,7 @@ class MIGA(Model):
 
             total_len += len(data)
             count += 1
-            pbar.set_postfix({"Average Length": total_len / count})
+            # pbar.set_postfix({"Average Length": total_len / count})
             # 记录损失
             for name in self.display_list:
                 result['train_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
@@ -657,7 +657,7 @@ class MIGA(Model):
 
                 total_len += len(data)
                 count += 1
-                pbar.set_postfix({"Average Length": total_len / count})
+                # pbar.set_postfix({"Average Length": total_len / count})
             for name in self.display_list:
                 result['val_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
         
