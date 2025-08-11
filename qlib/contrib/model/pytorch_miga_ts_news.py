@@ -501,7 +501,7 @@ class MIGA(Model):
 
         total_len = 0
         count = 0
-        pbar = tqdm(data_loader, desc="training...")
+        pbar = tqdm(data_loader, desc="training...", file=sys.stdout)
         for i, (data, news, news_mask) in enumerate(pbar):
             if i < self.step_len:
                 continue
