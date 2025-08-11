@@ -434,7 +434,23 @@ class MIGA(Model):
                 d_model=self.d_model,
                 num_experts=self.num_experts,
             )
-        
+        elif version == "B5":
+            self.MIGA_model = MIGAB5VarLenMoEGateTop(
+                price_dim=self.d_feat,
+                news_dim=1024,
+                hidden_dim=self.hidden_size,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+                frozen=False,
+                model_path=None,
+                padding_method=self.padding_method,
+                n_heads=self.num_heads,
+                d_model=self.d_model,
+                num_experts=self.num_experts,
+                expert_type=self.expert_type,
+            )
+        else:
+            raise ValueError("...")
 
     @property
     def use_gpu(self):

@@ -971,3 +971,145 @@ class MIGAB4VarLenCrossAttnAvgMoE(MIGAB2VarLenCrossAttn):
             "top_k_indices": None,
             "routing_weights_flat": None,
         }
+
+class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
+    """
+    B5-VarLen-MoE-GateTop: 在 MIGAB3VarLenMoE 基础上加入一个简单的 MLP Gate。
+
+    - Gate 的输入为 price_news（price_out 与 news_out 的拼接）；
+    - Gate 输出维度为专家个数 num_experts；
+    - 根据设定的 topk，从每个样本的专家中选择 topk 个进行聚合：
+        * 对于 GRU 专家：对选中的专家隐向量按 Gate 概率（softmax 后）做加权和，作为新闻分支表示；
+        * 对于 MLP 专家：对选中的专家标量预测按 Gate 概率做加权和，作为最终预测；
+    - 返回路由权重与 top-k 索引，便于分析。
+    """
+
+    def __init__(self,
+                 price_dim: int,
+                 news_dim: int,
+                 hidden_dim: int = 64,
+                 num_layers: int = 2,
+                 dropout: float = 0.0,
+                 frozen: bool = False,
+                 model_path: Optional[str] = None,
+                 padding_method: str = "zero",
+                 min_news: int = 10,
+                 n_heads: int = 4,
+                 d_model: Optional[int] = None,
+                 num_experts: int = 4,
+                 expert_type: str = 'gru',
+                 topk: int = 2):
+        super().__init__(price_dim=price_dim,
+                         news_dim=news_dim,
+                         hidden_dim=hidden_dim,
+                         num_layers=num_layers,
+                         dropout=dropout,
+                         frozen=frozen,
+                         model_path=model_path,
+                         padding_method=padding_method,
+                         min_news=min_news,
+                         n_heads=n_heads,
+                         d_model=d_model,
+                         num_experts=num_experts,
+                         expert_type=expert_type)
+
+        assert 1 <= topk <= num_experts, "topk must be in [1, num_experts]"
+        self.topk = topk
+
+        # Gate: 输入为 price_out 和 news_out 的拼接 [N, 2H]，输出为 [N, E]
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, num_experts),
+        )
+
+        # 归一化方便 gate 学习（可选）
+        self.price_news_ln = nn.LayerNorm(hidden_dim * 2)
+        
+        # 
+        if expert_type == 'gru':
+            self.experts = nn.ModuleList([
+                nn.GRU(input_size=6,
+                       hidden_size=hidden_dim,
+                       num_layers=2,
+                       batch_first=True,
+                       dropout=dropout)
+                for _ in range(num_experts)
+            ])
+        elif expert_type == 'mlp':
+            self.experts = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(d_model, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                )
+                for _ in range(num_experts)
+            ])
+        else:
+            raise ValueError(f"Unknown expert_type: {expert_type}")
+        
+        
+
+    def forward(self,
+                price: torch.Tensor,
+                news: Union[List[torch.Tensor], torch.Tensor],
+                mask: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None):
+        N, _, _ = price.shape
+
+        # 1) 预处理新闻（变长对齐）并基于 min_news 过滤
+        news_tensor, mask_n = self._prepare_news_inputs(news, mask, price.device)
+        _, news_insufficient = self._compute_news_length_and_filter(mask_n, price.device)
+        self.update_count((~news_insufficient).sum().item(), N)
+
+        # 2) 价格分支
+        price_out, _ = self.gru_price(price)
+        price_out = price_out[:, -1, :]  # [N, H]
+
+        # 3) 新闻 Cross-Attn 编码，得到一个基础的 news_out（无 MoE 聚合前的表示，取最后时刻）
+        news_out = torch.zeros((N, self.hidden_dim), device=price.device)
+        if (~news_insufficient).any() and news_tensor.numel() > 0:
+            news_valid = news_tensor[~news_insufficient]      # [N_sub, Tn, D_news]
+            price_sub = price[~news_insufficient]             # [N_sub, Tp, D_price]
+            fused_seq = self.cross_attn_np(news_valid, price_sub)  # [N_sub, Tn, d_model]
+            news_h, _ = self.gru_news(fused_seq)                   # [N_sub, Tn, H]
+            news_h = news_h[:, -1, :]
+            news_out[~news_insufficient] = news_h
+
+        # 4) Gate 计算（对所有样本都计算，news_base 对无新闻样本为 0）
+        out_hidden = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
+        gate_logits = self.gate_mlp(out_hidden)                     # [N, E]
+        # 先 topk 再 softmax（只在 top-k 上归一化）
+        topk_vals, topk_idx = torch.topk(gate_logits, k=self.topk, dim=-1)  # [N, K], [N, K]
+        # 构建 mask
+        mask = torch.full_like(gate_logits, -float('inf'))
+        mask.scatter_(1, topk_idx, 0.0)
+        # masked logits -> softmax
+        masked_logits = gate_logits + mask
+        topk_probs = F.softmax(masked_logits, dim=-1)
+        usage = topk_probs.mean(dim=0)
+
+        # 5) 专家前向，随后按 Gate 的 top-k 做聚合
+        expert_out_full = None  # 将形状处理到统一：
+
+        if (~news_insufficient).any() and fused_seq is not None:
+            expert_outputs = []
+            if self.expert_type == 'gru':
+                for gru in self.experts:  # type: ignore
+                    h, _ = gru(price)
+                    expert_outputs.append(h[:, -1, :])             # [N_sub, H]
+                expert_out_full = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]
+            elif self.expert_type == 'mlp':
+                # 对于 MLP 专家，使用 fused_seq 的最后一步特征作为输入，维度为 d_model
+                expert_outputs = [mlp(out_hidden) for mlp in self.experts]  # type: ignore
+                expert_out_full = torch.stack(expert_outputs, dim=0)     # [E, N_sub, 1]
+
+        # 根据 topk probs 对 expert_out_full 做加权
+        topk_probs_expanded = topk_probs.unsqueeze(-1).expand(-1, -1, expert_out_full.shape[-1])
+        expert_out_weighted = (expert_out_full * topk_probs_expanded).sum(dim=0)  # [N_sub, H]
+
+        return {
+            'predictions': expert_out_weighted,
+            'routing_weights': topk_probs,
+            'hidden_representations': None,
+            'top_k_indices': top_k_indices,
+            'routing_weights_flat': routing_weights_flat,
+        }
+
