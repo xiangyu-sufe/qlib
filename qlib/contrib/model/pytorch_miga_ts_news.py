@@ -522,8 +522,8 @@ class MIGA(Model):
 
         total_len = 0
         count = 0
-        pbar = tqdm(data_loader, desc="training...", file=sys.stdout)
-        for i, (data, news, news_mask) in enumerate(pbar):
+        # pbar = tqdm(data_loader, desc="training...", file=sys.stdout)
+        for i, (data, news, news_mask) in enumerate(data_loader):
             if i < self.step_len:
                 continue
             # ------------- IO 计时开始 ------------
@@ -630,8 +630,8 @@ class MIGA(Model):
         
         total_len = 0
         count = 0
-        pbar = tqdm(data_loader, desc="evaluating...") 
-        for data, news, news_mask in pbar:
+        # pbar = tqdm(data_loader, desc="evaluating...") 
+        for data, news, news_mask in data_loader:
             # 去除横截面 dim
             data.squeeze_(0) 
             news.squeeze_(0)
