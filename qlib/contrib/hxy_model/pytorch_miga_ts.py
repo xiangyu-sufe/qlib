@@ -970,6 +970,21 @@ class MIGAB4VarLenCrossAttnAvgMoE(MIGAB2VarLenCrossAttn):
             "routing_weights_flat": None,
         }
 
+class ExpertGRU(nn.Module):
+    def __init__(self, input_dim, hidden_dim, dropout):
+        super().__init__()
+        self.gru = nn.GRU(input_size=input_dim,
+                          hidden_size=hidden_dim,
+                          num_layers=2,
+                          batch_first=True,
+                          dropout=dropout)
+        self.proj = nn.Linear(hidden_dim, 1)  # 直接预测收益率
+
+    def forward(self, x):
+        h_seq, _ = self.gru(x)          # [N, T, H]
+        last_h = h_seq[:, -1, :]        # 取最后一个时间步
+        return self.proj(last_h)        # [N, 1]
+
 class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
     """
     B5-VarLen-MoE-GateTop: 在 MIGAB3VarLenMoE 基础上加入一个简单的 MLP Gate。
@@ -993,7 +1008,7 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                  padding_method: str = "zero",
                  min_news: int = 10,
                  n_heads: int = 4,
-                 d_model: Optional[int] = None,
+                 d_model: int = 64,
                  num_experts: int = 4,
                  expert_type: str = 'gru',
                  topk: int = 2):
@@ -1021,16 +1036,26 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         )
 
         # 归一化方便 gate 学习（可选）
-        self.price_news_ln = nn.LayerNorm(hidden_dim * 2)
+        # self.price_news_ln = nn.LayerNorm(hidden_dim * 2)
         
         # 
         if expert_type == 'gru':
             self.experts = nn.ModuleList([
-                nn.GRU(input_size=6,
-                       hidden_size=hidden_dim,
-                       num_layers=2,
-                       batch_first=True,
-                       dropout=dropout)
+                ExpertGRU(input_dim=6,
+                          hidden_dim=hidden_dim,
+                          dropout=dropout)
+                for _ in range(num_experts)
+            ])
+        elif expert_type == 'mlp':
+            self.experts = nn.ModuleList([
+                nn.Sequential(
+                    nn.GRU(input_size=6,
+                           hidden_size=hidden_dim,
+                           num_layers=2,
+                           batch_first=True,
+                           dropout=dropout),
+                    nn.Linear(hidden_dim, 1)
+                )
                 for _ in range(num_experts)
             ])
         elif expert_type == 'mlp':
@@ -1086,24 +1111,22 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         usage = topk_probs.mean(dim=0)
 
         # 5) 专家前向，随后按 Gate 的 top-k 做聚合
-        expert_out_full = None  # 将形状处理到统一：
-
-        if (~news_insufficient).any() and fused_seq is not None:
+        if (~news_insufficient).any():
             expert_outputs = []
             if self.expert_type == 'gru':
-                for gru in self.experts:  
-                    h, _ = gru(price)
-                    expert_outputs.append(h[:, -1, :])             # [N_sub, H]
+                for expert in self.experts:  
+                    expert_out = expert(price).squeeze()
+                    expert_outputs.append(expert_out)  # [N_sub, H]
                 expert_out_full = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]
             elif self.expert_type == 'mlp':
                 # 对于 MLP 专家，使用 fused_seq 的最后一步特征作为输入，维度为 d_model
                 expert_outputs = [mlp(out_hidden) for mlp in self.experts]  # type: ignore
                 expert_out_full = torch.stack(expert_outputs, dim=0)     # [E, N_sub, 1]
-                
-        expert_out = self.fc_out(expert_out_full).squeeze()
+        else:
+            expert_out_full = torch.zeros((self.num_experts, N), device=price.device)   
         # 根据 topk probs 对 expert_out_full 做加权
         topk_probs = topk_probs.transpose(0, 1)
-        expert_out_weighted = (expert_out * topk_probs).sum(dim=0)  # [N_sub, H]
+        expert_out_weighted = (expert_out_full * topk_probs).sum(dim=0)  # [N_sub, H]
 
         return {
             'predictions': expert_out_weighted,
