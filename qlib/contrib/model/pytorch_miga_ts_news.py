@@ -128,11 +128,10 @@ class MIGA(Model):
         self,
         d_feat=6, # 模型参数
         hidden_size=64,
-        num_groups: int = 4,
-        num_experts: int = 4,   
-        topk: int = 4,
-        expert_type: str = "mlp",
-        num_experts_per_group: int = 4,
+        num_groups: Optional[int] = None,
+        num_experts: int = 1,
+        expert_type: str = "gru",
+        num_experts_per_group: Optional[int] = None,   
         num_heads: int = 4, # 头数
         d_model: int = 64, # attention 的维度
         top_k: int = 2,
@@ -144,7 +143,7 @@ class MIGA(Model):
         metric="ic",
         batch_size=2000,
         early_stop=20,
-        loss="miga",
+        loss="ic",
         optimizer="adam",
         n_jobs=0,
         GPU=0,

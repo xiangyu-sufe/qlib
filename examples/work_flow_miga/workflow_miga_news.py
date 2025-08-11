@@ -242,7 +242,7 @@ if __name__ == "__main__":
                     "num_experts": args.num_experts,
                     "expert_type": args.expert_type,
                     "num_heads": args.num_heads,
-                    "topk": args.top_k,
+                    "top_k": args.top_k,
                     "expert_output_dim": 1,
                     "num_layers": args.num_layers,
                     "dropout": args.dropout,
