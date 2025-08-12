@@ -803,7 +803,7 @@ class MIGAB3VarLenMoE(MIGAB2VarLenCrossAttn):
                          min_news=min_news,
                          n_heads=n_heads,
                          d_model=d_model)
-        assert expert_type in {'gru', 'mlp'}
+        assert expert_type in {'gru', 'mlp', 'MIGAB2'}
         self.num_experts = num_experts
         self.expert_type = expert_type
 
@@ -1069,8 +1069,8 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                     min_news=min_news,
                     n_heads=n_heads,
                     d_model=d_model,
-                )]
-            )
+                ) for _ in range(num_experts)
+            ])
             
             
         else:
@@ -1106,17 +1106,18 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         # 4) Gate 计算（对所有样本都计算，news_base 对无新闻样本为 0）
         out_hidden = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
         gate_logits = self.gate_mlp(out_hidden)                     # [N, E]
-        probs = F.softmax(gate_logits, dim=-1)
-        usage = probs.mean(dim=0)
+        global_score = gate_logits.mean(dim=0)
+        global_prob = F.softmax(global_score, dim=-1)
+        usage = global_prob
         # 先 topk 再 softmax（只在 top-k 上归一化）
-        topk_vals, topk_idx = torch.topk(gate_logits, k=self.topk, dim=-1)  # [N, K], [N, K]
+        topk_vals, topk_idx = torch.topk(global_score, k=self.topk)  
         # 构建 mask
-        mask = torch.full_like(gate_logits, -float('inf'))
-        mask.scatter_(1, topk_idx, 0.0)
+        expert_mask = torch.full_like(global_score, -float('inf'))
+        expert_mask.scatter_(0, topk_idx, 0.0)
         # masked logits -> softmax
-        masked_logits = gate_logits + mask
-        topk_probs = F.softmax(masked_logits, dim=-1)
-        
+        masked_logits = global_score + expert_mask
+        topk_probs = F.softmax(masked_logits, dim=0)
+        topk_probs_reshape = topk_probs[topk_idx]
 
         # 5) 专家前向，随后按 Gate 的 top-k 做聚合
         if (~news_insufficient).any():
@@ -1131,16 +1132,15 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                 expert_outputs = [mlp(out_hidden) for mlp in self.experts]  # type: ignore
                 expert_out_full = torch.stack(expert_outputs, dim=0)     # [E, N_sub, 1]
             elif self.expert_type == 'MIGAB2':
-                for expert in self.experts:  
-                    expert_out = expert(price, news, mask)      
+                for k in topk_idx:
+                    expert_out = self.experts[k](price, news, mask)      
                     expert_out = expert_out["predictions"] 
                     expert_outputs.append(expert_out)  # [N_sub, H]
                 expert_out_full = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]         
         else:
             expert_out_full = torch.zeros((self.num_experts, N), device=price.device)   
         # 根据 topk probs 对 expert_out_full 做加权
-        topk_probs = topk_probs.transpose(0, 1)
-        expert_out_weighted = (expert_out_full * topk_probs).sum(dim=0)  # [N_sub, H]
+        expert_out_weighted = (expert_out_full * topk_probs_reshape.unsqueeze(1)).sum(dim=0)  # [N_sub, H]
 
         return {
             'predictions': expert_out_weighted,

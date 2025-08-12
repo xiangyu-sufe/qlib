@@ -357,7 +357,10 @@ class GRUNDCG(Model):
                     lambda_grads = grad
                 elif self.combine_type == 'add': # 相加形式
                     # 计算 lambda 梯度
-                    lambda_grads = compute_lambda_gradients(label.detach(), pred.detach(), self.n_layer, self.sigma, self.linear_ndcg)
+                    lambda_grads = compute_lambda_gradients(
+                        label.detach(),
+                        pred.detach(),
+                        self.n_layer, self.sigma, self.linear_ndcg)
                     # 检查梯度是否有效
                     check_grad = torch.sum(lambda_grads).item()
                     if check_grad == float('inf') or np.isnan(check_grad):
@@ -368,7 +371,7 @@ class GRUNDCG(Model):
                     lambda_grads = scale_preserve_sign_torch(lambda_grads)
                     grad = scale_preserve_sign_torch(grad)
                     lambda_grads = (1-self.weight) * lambda_grads + grad * self.weight
-                    # lambda_grads = lambda_grads / lambda_grads.norm(2) * grad_norm # 保证梯度范数一致
+                    lambda_grads = lambda_grads / lambda_grads.norm(2) * grad_norm # 保证梯度范数一致
                 else:
                     raise ValueError(f"Unknown combine_type: {self.combine_type}")
             else:
