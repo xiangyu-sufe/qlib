@@ -600,7 +600,10 @@ class MIGA(Model):
             # pbar.set_postfix({"Average Length": total_len / count})
             # 记录损失
             for name in self.display_list:
-                result['train_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
+                result['train_'+name].append(self.metric_fn(pred.detach(), 
+                                                            label.detach(), 
+                                                            hidden = routing_weights,
+                                                            name = name))
 
         # Debug模式下记录梯度信息
         if self.debug:
@@ -660,13 +663,13 @@ class MIGA(Model):
                 else:
                     output = self.MIGA_model(feature.float())
                 pred = output['predictions']
-                # routing_weights = output['routing_weights']
+                routing_weights = output['routing_weights']
 
                 total_len += len(data)
                 count += 1
                 # pbar.set_postfix({"Average Length": total_len / count})
             for name in self.display_list:
-                result['val_'+name].append(self.metric_fn(pred.detach(), label.detach(), name = name))
+                result['val_'+name].append(self.metric_fn(pred.detach(), label.detach(), hidden = routing_weights, name = name))
         
         for name in self.display_list:
             result_agg['val_'+name] = float(np.mean(result['val_'+name]))
