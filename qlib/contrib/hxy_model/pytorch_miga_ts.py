@@ -1049,24 +1049,30 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         elif expert_type == 'mlp':
             self.experts = nn.ModuleList([
                 nn.Sequential(
-                    nn.GRU(input_size=6,
-                           hidden_size=hidden_dim,
-                           num_layers=2,
-                           batch_first=True,
-                           dropout=dropout),
-                    nn.Linear(hidden_dim, 1)
-                )
-                for _ in range(num_experts)
-            ])
-        elif expert_type == 'mlp':
-            self.experts = nn.ModuleList([
-                nn.Sequential(
                     nn.Linear(d_model, hidden_dim),
                     nn.ReLU(),
                     nn.Linear(hidden_dim, hidden_dim),
                 )
                 for _ in range(num_experts)
             ])
+        elif expert_type == 'MIGAB2':
+            self.experts = nn.ModuleList([
+                MIGAB2VarLenCrossAttn(
+                    price_dim=price_dim,
+                    news_dim=news_dim,
+                    hidden_dim=hidden_dim,
+                    num_layers=num_layers,
+                    dropout=dropout,
+                    frozen=frozen,
+                    model_path=None,            # 子专家一般不从外部加载，避免权重覆盖
+                    padding_method=padding_method,
+                    min_news=min_news,
+                    n_heads=n_heads,
+                    d_model=d_model,
+                )]
+            )
+            
+            
         else:
             raise ValueError(f"Unknown expert_type: {expert_type}")
         
@@ -1124,6 +1130,12 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                 # 对于 MLP 专家，使用 fused_seq 的最后一步特征作为输入，维度为 d_model
                 expert_outputs = [mlp(out_hidden) for mlp in self.experts]  # type: ignore
                 expert_out_full = torch.stack(expert_outputs, dim=0)     # [E, N_sub, 1]
+            elif self.expert_type == 'MIGAB2':
+                for expert in self.experts:  
+                    expert_out = expert(price, news, mask)      
+                    expert_out = expert_out["predictions"] 
+                    expert_outputs.append(expert_out)  # [N_sub, H]
+                expert_out_full = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]         
         else:
             expert_out_full = torch.zeros((self.num_experts, N), device=price.device)   
         # 根据 topk probs 对 expert_out_full 做加权
