@@ -16,8 +16,10 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
 import warnings
+import sys
 
-
+sys.modules["numpy._core"] = np.core
+sys.modules["numpy._core.numeric"] = np.core.numeric
 
 
 root_dir = os.path.expanduser("~")
@@ -453,7 +455,7 @@ def read_minute1(processed):
     # """
     root_dir = os.path.expanduser('~')
     if processed:
-        df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_filtered1.pkl')
+        df = pd.read_pickle(f'{root_dir}/autodl-tmp/minute_filtered1.pkl')
     else:
         df = pd.read_pickle(f'{root_dir}/GRU/Data/minute_factors/qlib/minute_raw.pkl')
     df.columns = df.columns.str.replace(r'\..*$', '', regex=True)

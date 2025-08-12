@@ -123,7 +123,7 @@ if __name__ == "__main__":
     # 读取新闻数据
     if args.use_news:
         a = time.time()
-        news_lmdb_path = '/home/huxiangyu/.qlib/llm_data/embedding.lmdb'
+        news_lmdb_path = '/root/autodl-tmp/embedding.lmdb'
         if not os.path.exists(news_lmdb_path):
             news_embed = pd.read_pickle('/home/huxiangyu/.qlib/llm_data/embedding.pkl')
             write_lmdb(news_embed, news_lmdb_path)

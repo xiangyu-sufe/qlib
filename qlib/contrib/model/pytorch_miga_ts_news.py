@@ -337,7 +337,7 @@ class MIGA(Model):
         self.lr_scheduler = ReduceLROnPlateau(
             optimizer=self.train_optimizer,
             mode='max',
-            factor = 0.2,
+            factor = 0.5,
             patience = 3, 
             min_lr = 1e-5           # 学习率下限
         )
