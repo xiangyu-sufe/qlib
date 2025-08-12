@@ -1100,6 +1100,8 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         # 4) Gate 计算（对所有样本都计算，news_base 对无新闻样本为 0）
         out_hidden = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
         gate_logits = self.gate_mlp(out_hidden)                     # [N, E]
+        probs = F.softmax(gate_logits, dim=-1)
+        usage = probs.mean(dim=0)
         # 先 topk 再 softmax（只在 top-k 上归一化）
         topk_vals, topk_idx = torch.topk(gate_logits, k=self.topk, dim=-1)  # [N, K], [N, K]
         # 构建 mask
@@ -1108,7 +1110,7 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         # masked logits -> softmax
         masked_logits = gate_logits + mask
         topk_probs = F.softmax(masked_logits, dim=-1)
-        usage = topk_probs.mean(dim=0)
+        
 
         # 5) 专家前向，随后按 Gate 的 top-k 做聚合
         if (~news_insufficient).any():
