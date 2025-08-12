@@ -1049,9 +1049,11 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
         elif expert_type == 'mlp':
             self.experts = nn.ModuleList([
                 nn.Sequential(
-                    nn.Linear(d_model, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.Linear(d_model, d_model // 2),
+                    nn.LeakyReLU(),
+                    nn.Linear(d_model // 2, d_model // 4),
+                    nn.LeakyReLU(),
+                    nn.Linear(d_model // 4, 1),
                 )
                 for _ in range(num_experts)
             ])
@@ -1105,6 +1107,8 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
 
         # 4) Gate 计算（对所有样本都计算，news_base 对无新闻样本为 0）
         out_hidden = self.add_gate(price_out, news_out, (~news_insufficient).unsqueeze(1))
+        # 融合价格和新闻的语义向量 202050812
+        
         gate_logits = self.gate_mlp(out_hidden)                     # [N, E]
         global_score = gate_logits.mean(dim=0)
         global_prob = F.softmax(global_score, dim=-1)
@@ -1129,7 +1133,9 @@ class MIGAB5VarLenMoEGateTop(MIGAB3VarLenMoE):
                 expert_out_full = torch.stack(expert_outputs, dim=0)  # [E, N_sub, H]
             elif self.expert_type == 'mlp':
                 # 对于 MLP 专家，使用 fused_seq 的最后一步特征作为输入，维度为 d_model
-                expert_outputs = [mlp(out_hidden) for mlp in self.experts]  # type: ignore
+                for k in topk_idx:
+                    expert_out = self.experts[k](out_hidden).squeeze()
+                    expert_outputs.append(expert_out)  # [N_sub, H]
                 expert_out_full = torch.stack(expert_outputs, dim=0)     # [E, N_sub, 1]
             elif self.expert_type == 'MIGAB2':
                 for k in topk_idx:
