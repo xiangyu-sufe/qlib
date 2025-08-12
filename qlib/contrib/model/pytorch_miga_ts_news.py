@@ -44,6 +44,7 @@ from qlib.utils.hxy_utils import (compute_grad_norm,
                                   make_collate_fn,
                                   make_varlen_collate_fn,
                                   process_ohlc_cuda,
+                                  process_minute_cuda,
                                   process_ohlc_batchwinsor,
                                   process_ohlc_batchnorm,
                                   process_ohlc_inf_nan_fill0_cuda, visualize_evals_result_general,
@@ -165,6 +166,7 @@ class MIGA(Model):
         version=None,
         padding_method="zero",
         ohlc=False,
+        minute=False,
         display_list=['loss', 'ic', 'rankic', 'ndcg', 'topk_return'],
         **kwargs,
     ):
@@ -211,6 +213,7 @@ class MIGA(Model):
         self.use_news = use_news
         self.padding_method = padding_method
         self.ohlc = ohlc
+        self.minute = minute
         self.display_list = display_list
         self.omega = omega
         self.epsilon = epsilon
@@ -252,6 +255,8 @@ class MIGA(Model):
             "\nnum_groups : {}"
             "\nnum_experts_per_group : {}"
             "\nnum_heads : {}"
+            "\nohlc : {}"
+            "\minute : {}"
             "\ntop_k : {}"
             "\nexpert_output_dim : {}"
             "\nomega : {}"
@@ -283,6 +288,8 @@ class MIGA(Model):
                 self.num_groups,
                 self.num_experts_per_group,
                 self.num_heads,
+                self.ohlc,
+                self.minute,
                 self.top_k,
                 self.expert_output_dim,
                 self.omega,
@@ -463,6 +470,13 @@ class MIGA(Model):
     def use_gpu(self):
         return self.device != torch.device("cpu")
 
+    def load_model(self):
+        self.MIGA_model.load_state_dict(torch.load(
+            os.path.join(self.save_path, 'model.pt'), 
+            map_location='cpu',
+        ))
+        self.fitted = True
+
     def mse(self, pred, label, weight):
         loss = weight * (pred - label) ** 2
         return torch.mean(loss)
@@ -543,6 +557,17 @@ class MIGA(Model):
             # 取出量价、新闻、mask
             feature = data[:,:, :self.d_feat].to(self.device, non_blocking=True)
             label = data[:, -1, self.d_feat].to(self.device, non_blocking=True)
+            if self.ohlc:
+                # 这里是分钟数据没有归一化
+                # 使用 ohlc 数据
+                # 先时序归一化+ winsor + batchnorm + fill0
+                if self.minute:
+                    feature = process_minute_cuda(feature)
+                else:
+                    feature = process_ohlc_cuda(feature)
+                feature = process_ohlc_batchwinsor(feature)
+                feature = process_ohlc_batchnorm(feature) 
+                feature = process_ohlc_inf_nan_fill0_cuda(feature)
             news_feature = news.to(self.device, non_blocking=True)
             news_mask = news_mask.to(self.device, non_blocking=True)
             # torch.cuda.synchronize()            # 保证搬运结束

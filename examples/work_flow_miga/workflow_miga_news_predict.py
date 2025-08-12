@@ -131,6 +131,7 @@ if __name__ == "__main__":
         # print(f'新闻数据占用内存大小: {news_store.memory_usage} MB')
     # 读取量价数据
     if args.ohlc:
+        a = time.time()
         print("读取高开低收数据")
         ohlc = read_ohlc() # 读取高开低收
         labels = read_label(day=10, method = 'win+neu+zscore')
@@ -237,46 +238,15 @@ if __name__ == "__main__":
             "process_type": "append",
             "drop_raw": True,
         }   
-        
+        model_path = f"{save_path}/task_{task_id}/model.pt"
+        args_json_path = f"{save_path}/task_{task_id}/args.json"
+        with open(args_json_path, 'r', encoding='utf-8') as f:
+            args_dict = json.load(f)  # 直接解析为字典
         task = {
             "model": {
                 "class": "MIGA",
                 "module_path": "qlib.contrib.model.pytorch_miga_ts_news",
                 "kwargs": {
-                    "d_feat": args.d_feat, # 模型参数
-                    "seed": GLOBAL_SEED, # 种子
-                    "hidden_size": args.hidden_dim,
-                    "num_groups": args.num_groups,
-                    "num_experts_per_group": args.num_experts_per_group,
-                    "num_experts": args.num_experts,
-                    "expert_type": args.expert_type,
-                    "num_heads": args.num_heads,
-                    "top_k": args.top_k,
-                    "expert_output_dim": 1,
-                    "num_layers": args.num_layers,
-                    "dropout": args.dropout,
-                    "n_epochs": args.n_epochs, # 训练参数
-                    "batch_size": args.batch_size,
-                    "lr": args.lr,
-                    "early_stop": args.early_stop,
-                    "metric": args.metric,
-                    "loss": args.loss,
-                    "n_jobs": args.n_jobs,
-                    "GPU": args.gpu,
-                    "lambda_reg": args.lambda_reg, # 损失参数
-                    "omega": args.omega,
-                    "epsilon": args.epsilon,
-                    "omega_scheduler": args.omega_scheduler,
-                    "omega_decay": args.omega_decay,
-                    "debug": args.debug,  # Set to True for debugging mode
-                    "save_path": f"{save_path}/task_{task_id}",
-                    "step_len": args.step_len,
-                    "news_store": news_lmdb_path,
-                    "use_news" : args.use_news,
-                    "ohlc": args.ohlc,
-                    "minute": args.minute,
-                    "padding_method": args.padding_method,
-                    "version": "B" + str(args.version),
                 },
             },
             "dataset": {
@@ -300,8 +270,9 @@ if __name__ == "__main__":
         }
         # 保存设置
         os.makedirs(f"{save_path}/task_{task_id}", exist_ok=True)
-        with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
-            json.dump(task, f, indent=2, ensure_ascii=False, default=custom_serializer)        
+        task["model"]["kwargs"] = args_dict["model"]["kwargs"]
+        # with open(os.path.join(f"{save_path}/task_{task_id}", 'args.json'), 'w', encoding='utf-8') as f:
+        #     json.dump(task, f, indent=2, ensure_ascii=False, default=custom_serializer)        
 
         # model initialization
         model = init_instance_by_config(task["model"])
@@ -316,9 +287,10 @@ if __name__ == "__main__":
         # inject into model so it can be used when constructing DataLoader
         model.extra_worker_init_fn = _seed_worker
         model.debug_timing = True
-        model.fit(dataset)
+        # model.fit(dataset)
         
         # 在测试集预测
+        model.load_model()
         score = model.predict(dataset)
         score.name = 'score'
         # 保存预测值
